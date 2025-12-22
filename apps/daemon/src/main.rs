@@ -16,10 +16,8 @@ use tokio::{net::TcpListener, sync::oneshot, time::sleep};
 
 use crate::{
     ffmpeg::{
-        builder::build_ffmpeg_args,
         capture::{VideoDeviceKind, list_video_devices},
         monitor::spawn_ffmpeg_monitor,
-        process::FFmpegProcess,
     },
     ring_buffer::RingBuffer,
     routes::build_router,
@@ -63,7 +61,6 @@ async fn main() {
     }
 
     // --- spawn background tasks ---
-    spawn_buffer_simulator(state.clone());
     spawn_ffmpeg_monitor(state.clone());
 
     // --- server ---
@@ -83,27 +80,4 @@ async fn main() {
         })
         .await
         .expect("server error");
-}
-
-fn spawn_buffer_simulator(state: SharedState) {
-    tokio::spawn(async move {
-        loop {
-            sleep(Duration::from_secs(1)).await;
-
-            let mut guard = state.lock().unwrap();
-
-            if guard.shutdown_tx.is_none() {
-                break;
-            }
-
-            if guard.buffering {
-                guard.buffer_seconds += 1;
-
-                // Cap the buffer at 30 seconds (simulate ring buffer)
-                if guard.buffer_seconds > 30 {
-                    guard.buffer_seconds = 30;
-                }
-            }
-        }
-    });
 }
