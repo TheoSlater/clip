@@ -1,0 +1,23 @@
+use axum::{Json, extract::State};
+
+use crate::state::SharedState;
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct StatusResponse {
+    pub buffering: bool,
+    pub buffer_seconds: u32,
+    pub clip_count: u32,
+    pub ring_buffer_packets: usize,
+}
+
+pub async fn get_status(State(state): State<SharedState>) -> Json<StatusResponse> {
+    let guard = state.lock().unwrap();
+
+    Json(StatusResponse {
+        buffering: guard.buffering,
+        buffer_seconds: guard.buffer_seconds,
+        clip_count: guard.clip_count,
+        ring_buffer_packets: guard.ring_buffer.lock().unwrap().len(),
+    })
+}
