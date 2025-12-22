@@ -24,10 +24,16 @@ export const useVideoDevices = () => {
             },
         }),
         mutation: useMutation({
-            mutationFn: (data: string) => {
+            mutationFn: ({
+                deviceId,
+                framerate,
+            }: {
+                deviceId: string;
+                framerate: number;
+            }) => {
                 return post<undefined, CaptureConfig>("/config/capture", {
-                    video_device_id: data,
-                    framerate: 30,
+                    video_device_id: deviceId,
+                    framerate,
                 });
             },
         }),

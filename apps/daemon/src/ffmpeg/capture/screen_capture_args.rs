@@ -1,10 +1,10 @@
 #[derive(Debug, Clone)]
-pub enum CaptureSource {
+pub enum VideoCaptureSource {
     Screen,
     Monitor { index: u32 },
 }
 
-impl CaptureSource {
+impl VideoCaptureSource {
     pub fn from_device_id(id: &str) -> Option<Self> {
         // macOS example: avf:video:4
         let parts: Vec<&str> = id.split(':').collect();
@@ -13,8 +13,8 @@ impl CaptureSource {
             ["avf", "video", index] => index
                 .parse::<u32>()
                 .ok()
-                .map(|i| CaptureSource::Monitor { index: i }),
-            ["screen", "primary"] => Some(CaptureSource::Screen),
+                .map(|i| VideoCaptureSource::Monitor { index: i }),
+            ["screen", "primary"] => Some(VideoCaptureSource::Screen),
             _ => None,
         }
     }
@@ -22,11 +22,11 @@ impl CaptureSource {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::CaptureSource;
+    use super::VideoCaptureSource;
 
-    pub fn screen_capture_args(source: &CaptureSource) -> Vec<String> {
+    pub fn screen_capture_args(source: &VideoCaptureSource) -> Vec<String> {
         match source {
-            CaptureSource::Screen => vec![
+            VideoCaptureSource::Screen => vec![
                 "-f".to_string(),
                 "gdigrab".to_string(),
                 "-draw_mouse".to_string(),
@@ -35,7 +35,7 @@ mod windows {
                 "desktop".to_string(),
             ],
 
-            CaptureSource::Monitor { index: _ } => {
+            VideoCaptureSource::Monitor { index: _ } => {
                 // keep your offset logic for now
                 vec![
                     "-f".to_string(),
@@ -52,17 +52,17 @@ mod windows {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::CaptureSource;
+    use super::VideoCaptureSource;
 
     /// Build avfoundation input arguments for macOS.
     ///
     /// Notes:
     /// - The index must come directly from avfoundation enumeration.
     /// - No framerate is set here (builder owns that).
-    pub fn screen_capture_args(source: &CaptureSource) -> Vec<String> {
+    pub fn screen_capture_args(source: &VideoCaptureSource) -> Vec<String> {
         match source {
             // Default screen (screen 0)
-            CaptureSource::Screen => vec![
+            VideoCaptureSource::Screen => vec![
                 "-f".to_string(),
                 "avfoundation".to_string(),
                 "-i".to_string(),
@@ -70,7 +70,7 @@ mod macos {
             ],
 
             // Explicit device selection
-            CaptureSource::Monitor { index } => vec![
+            VideoCaptureSource::Monitor { index } => vec![
                 "-f".to_string(),
                 "avfoundation".to_string(),
                 "-i".to_string(),
@@ -80,22 +80,10 @@ mod macos {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
-    use super::CaptureSource;
-
-    pub fn screen_capture_args(source: &CaptureSource) -> Vec<String> {
-        // linux impl
-    }
-}
-
-pub fn screen_capture_args(source: &CaptureSource) -> Vec<String> {
+pub fn screen_capture_args(source: &VideoCaptureSource) -> Vec<String> {
     #[cfg(target_os = "windows")]
     return windows::screen_capture_args(source);
 
     #[cfg(target_os = "macos")]
     return macos::screen_capture_args(source);
-
-    #[cfg(target_os = "linux")]
-    return linux::screen_capture_args(source);
 }

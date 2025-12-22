@@ -8,7 +8,6 @@ pub struct StatusResponse {
     pub capture_config: CaptureConfig,
     pub buffering: bool,
     pub buffer_seconds: u32,
-    pub clip_count: u32,
     pub ring_buffer_packets: usize,
 }
 
@@ -19,7 +18,6 @@ pub async fn get_status(State(state): State<SharedState>) -> Json<StatusResponse
         capture_config: guard.capture_config.clone(),
         buffering: guard.buffering,
         buffer_seconds: guard.buffer_seconds,
-        clip_count: guard.clip_count,
         ring_buffer_packets: guard.ring_buffer.lock().unwrap().len(),
     })
 }

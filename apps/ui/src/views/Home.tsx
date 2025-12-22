@@ -1,13 +1,18 @@
-import { Button, Select, SelectItem } from "@heroui/react";
+import { addToast, Button, Select, SelectItem } from "@heroui/react";
 import { useState } from "react";
+import { useAudioDevices } from "../hooks/useAudioDevices";
 import { useVideoDevices } from "../hooks/useVideoDevices";
 
 export const Home = () => {
     const {
-        query: { data: videoDevices, isLoading },
-        mutation: { mutate },
+        query: { data: videoDevices },
+        mutation: { mutate: mutateVideoDevice },
     } = useVideoDevices();
-    console.log(videoDevices);
+
+    const {
+        query: { data: audioDevices },
+        mutation: { mutate: mutateAudioDevice },
+    } = useAudioDevices();
 
     const [textRes, setTextRes] = useState("{}");
 
@@ -38,7 +43,29 @@ export const Home = () => {
     const handleChangeVideoDevice = (
         e: React.ChangeEvent<HTMLSelectElement>,
     ) => {
-        mutate(e.target.value);
+        // find highest framerate in capabilities
+        const device = videoDevices?.find((d) => d.id === e.target.value);
+        if (!device) {
+            addToast({
+                title: "Device not found",
+                severity: "danger",
+                color: "danger",
+            });
+            return;
+        }
+
+        mutateVideoDevice({
+            deviceId: e.target.value,
+            framerate: 30,
+        });
+    };
+
+    const handleChangeAudioDevice = (
+        e: React.ChangeEvent<HTMLSelectElement>,
+    ) => {
+        mutateAudioDevice({
+            deviceId: e.target.value,
+        });
     };
 
     return (
@@ -49,7 +76,28 @@ export const Home = () => {
                     onChange={handleChangeVideoDevice}
                 >
                     {videoDevices.map((device) => (
-                        <SelectItem key={device.id}>{device.label}</SelectItem>
+                        <SelectItem key={device.id} textValue={device.label}>
+                            {device.label}{" "}
+                            <p className="text-xs text-gray-400">
+                                ({device.id})
+                            </p>
+                        </SelectItem>
+                    ))}
+                </Select>
+            )}
+
+            {audioDevices && (
+                <Select
+                    label="Select Audio Device"
+                    onChange={handleChangeAudioDevice}
+                >
+                    {audioDevices.map((device) => (
+                        <SelectItem key={device.id} textValue={device.label}>
+                            {device.label}{" "}
+                            <p className="text-xs text-gray-400">
+                                ({device.id})
+                            </p>
+                        </SelectItem>
                     ))}
                 </Select>
             )}
@@ -71,7 +119,7 @@ export const Home = () => {
             </Button>
 
             <pre className="text-wrap">
-                {JSON.stringify(JSON.parse(textRes), null, 2)}
+                {JSON.stringify(JSON.parse(textRes || "{}"), null, 2)}
             </pre>
         </main>
     );

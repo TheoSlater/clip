@@ -29,13 +29,22 @@ mod windows {
             kind: VideoDeviceKind::Screen,
         }]
     }
+
+    #[cfg(target_os = "windows")]
+    pub fn list_audio_devices() -> Vec<AudioDevice> {
+        vec![AudioDevice {
+            id: "audio:primary".into(),
+            label: "Primary Audio".into(),
+            is_input: false,
+        }]
+    }
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
     use std::process::Command;
 
-    use crate::ffmpeg::capture::{VideoDevice, VideoDeviceKind};
+    use crate::ffmpeg::capture::{AudioDevice, VideoDevice, VideoDeviceKind};
 
     pub fn list_video_devices() -> Vec<VideoDevice> {
         let output = Command::new("ffmpeg")
@@ -98,6 +107,57 @@ mod macos {
 
         devices
     }
+
+    pub fn list_audio_devices() -> Vec<AudioDevice> {
+        let output = Command::new("ffmpeg")
+            .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
+            .output()
+            .expect("failed to run ffmpeg");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let mut devices = Vec::new();
+        let mut in_audio_section = false;
+
+        for line in stderr.lines() {
+            let line = line.trim();
+
+            if line.contains("AVFoundation audio devices") {
+                in_audio_section = true;
+                continue;
+            }
+
+            if line.contains("AVFoundation video devices") {
+                in_audio_section = false;
+                continue;
+            }
+
+            if !in_audio_section {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(']').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+
+            let index_part = parts[1].trim();
+            let index = index_part.trim_start_matches('[').trim();
+            let label = parts[2].trim();
+
+            if index.is_empty() || label.is_empty() {
+                continue;
+            }
+
+            devices.push(AudioDevice {
+                id: format!("avf:audio:{}", index),
+                label: label.to_string(),
+                is_input: true, // avfoundation audio devices are inputs
+            });
+        }
+
+        devices
+    }
 }
 
 pub fn list_video_devices() -> Vec<VideoDevice> {
@@ -106,4 +166,12 @@ pub fn list_video_devices() -> Vec<VideoDevice> {
 
     #[cfg(target_os = "macos")]
     return macos::list_video_devices();
+}
+
+pub fn list_audio_devices() -> Vec<AudioDevice> {
+    #[cfg(target_os = "windows")]
+    return windows::list_audio_devices();
+
+    #[cfg(target_os = "macos")]
+    return macos::list_audio_devices();
 }

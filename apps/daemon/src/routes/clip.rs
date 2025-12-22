@@ -47,12 +47,6 @@ pub async fn clip(State(state): State<SharedState>) -> Result<Json<ClipResponse>
         bytes_written += packet.data.len();
     }
 
-    // Update the clip count
-    {
-        let mut guard = state.lock().unwrap();
-        guard.clip_count += 1;
-    }
-
     // Compute duration
     let duration_ms = {
         let guard = state.lock().unwrap();

@@ -10,9 +10,8 @@ use state::{DaemonState, SharedState};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Duration,
 };
-use tokio::{net::TcpListener, sync::oneshot, time::sleep};
+use tokio::{net::TcpListener, sync::oneshot};
 
 use crate::{
     ffmpeg::{
@@ -44,11 +43,11 @@ async fn main() {
     let state: SharedState = Arc::new(Mutex::new(DaemonState {
         capture_config: CaptureConfig {
             video_device_id: default_video.id.clone(),
+            audio_device_id: None,
             framerate: 60,
         },
         buffering: true,
         buffer_seconds: 0,
-        clip_count: 0,
         shutdown_tx: Some(shutdown_tx),
         ffmpeg: None,
         ring_buffer: ring_buffer.clone(),

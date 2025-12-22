@@ -1,24 +1,33 @@
 use crate::{
-    ffmpeg::capture::{CaptureSource, screen_capture_args},
+    ffmpeg::capture::{
+        AudioCaptureSource, VideoCaptureSource, audio_capture_args, screen_capture_args,
+    },
     state::CaptureConfig,
 };
 
 pub fn build_ffmpeg_args(config: &CaptureConfig) -> Vec<String> {
     println!("building ffmpeg args with {:?}", config);
 
-    let source =
-        CaptureSource::from_device_id(&config.video_device_id).unwrap_or(CaptureSource::Screen);
+    let source = VideoCaptureSource::from_device_id(&config.video_device_id)
+        .unwrap_or(VideoCaptureSource::Screen);
 
     let mut args: Vec<String> = Vec::new();
 
     // global
     args.extend(["-hide_banner", "-loglevel", "error"].map(String::from));
 
-    // input options
+    // video input options
     args.extend(["-framerate".to_string(), config.framerate.to_string()]);
 
-    // input device
+    // video input
     args.extend(screen_capture_args(&source));
+
+    // audio input
+    if let Some(audio_id) = &config.audio_device_id {
+        if let Some(source) = AudioCaptureSource::from_device_id(audio_id) {
+            args.extend(audio_capture_args(&source));
+        }
+    }
 
     // encoding
     args.extend(
