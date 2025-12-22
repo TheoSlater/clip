@@ -1,9 +1,11 @@
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::{ffmpeg::process::FFmpegProcess, ring_buffer::RingBuffer};
 
 pub struct DaemonState {
+    pub capture_config: CaptureConfig,
     pub buffering: bool,
     pub buffer_seconds: u32,
     pub clip_count: u32,
@@ -13,3 +15,9 @@ pub struct DaemonState {
 }
 
 pub type SharedState = Arc<Mutex<DaemonState>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureConfig {
+    pub video_device_id: String,
+    pub framerate: u32,
+}

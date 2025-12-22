@@ -4,10 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    ffmpeg::capture::{CaptureSource, screen_capture_args},
-    ring_buffer::{Packet, RingBuffer},
-};
+use crate::ring_buffer::{Packet, RingBuffer};
 
 pub struct FFmpegProcess {
     child: Child,
@@ -17,42 +14,7 @@ pub struct FFmpegProcess {
 }
 
 impl FFmpegProcess {
-    pub fn spawn() -> std::io::Result<Self> {
-        let capture = CaptureSource::Screen;
-
-        let mut args: Vec<&str> = Vec::new();
-
-        // global
-        args.extend(["-hide_banner", "-loglevel", "error", "-re"]);
-
-        // input (platform-specific)
-        args.extend(screen_capture_args(&capture));
-
-        // encoding
-        args.extend([
-            "-fflags",
-            "+genpts",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-        ]);
-
-        // output
-        args.extend([
-            "-flush_packets",
-            "1",
-            "-muxdelay",
-            "0",
-            "-muxpreload",
-            "0",
-            "-f",
-            "mpegts",
-            "pipe:1",
-        ]);
-
+    pub fn spawn(args: Vec<String>) -> std::io::Result<Self> {
         let mut child = Command::new("ffmpeg")
             .args(args)
             .stdin(Stdio::null())
@@ -76,16 +38,14 @@ impl FFmpegProcess {
             let start = self.start_time;
 
             std::thread::spawn(move || {
-                let mut buf = [0u8; 188 * 7]; // TS packet multiple
+                let mut buf = [0u8; 188 * 7];
 
                 loop {
                     match stdout.read(&mut buf) {
-                        Ok(0) => break, // FFmpeg exited
+                        Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            let pts_ms = start.elapsed().as_millis() as u64;
-
                             let packet = Packet {
-                                pts_ms,
+                                pts_ms: start.elapsed().as_millis() as u64,
                                 data: buf[..n].to_vec(),
                             };
 
@@ -93,7 +53,6 @@ impl FFmpegProcess {
                                 rb.push(packet);
                             }
                         }
-                        Err(_) => break,
                     }
                 }
             });
@@ -104,7 +63,6 @@ impl FFmpegProcess {
         if let Some(stderr) = self.stderr.take() {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
-
                 for line in reader.lines().flatten() {
                     println!("[ffmpeg] {}", line);
                 }

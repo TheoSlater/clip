@@ -1,8 +1,7 @@
 use std::time::Duration;
 use tokio::time::sleep;
 
-use super::process::FFmpegProcess;
-use crate::state::SharedState;
+use crate::{runtime::restart_capture, state::SharedState};
 
 pub fn spawn_ffmpeg_monitor(state: SharedState) {
     tokio::spawn(async move {
@@ -26,22 +25,7 @@ pub fn spawn_ffmpeg_monitor(state: SharedState) {
             };
 
             if needs_restart {
-                match FFmpegProcess::spawn() {
-                    Ok(mut proc) => {
-                        proc.drain_stderr();
-
-                        // start stdout reader when ffmpeg is started
-                        let rb = guard.ring_buffer.clone();
-                        proc.start_stdout_reader(rb);
-                        guard.ffmpeg = Some(proc);
-
-                        println!("[ffmpeg] restarted");
-                    }
-                    Err(err) => {
-                        println!("[ffmpeg] failed to restart: {}", err);
-                        guard.ffmpeg = None;
-                    }
-                }
+                restart_capture(&mut guard).ok();
             }
         }
     });

@@ -61,6 +61,10 @@ impl RingBuffer {
             _ => 0,
         }
     }
+
+    pub fn clear(&mut self) {
+        self.packets.clear();
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 mod ffmpeg;
 mod ring_buffer;
 mod routes;
+mod runtime;
 mod state;
 
 use axum::Router;
@@ -14,9 +15,16 @@ use std::{
 use tokio::{net::TcpListener, sync::oneshot, time::sleep};
 
 use crate::{
-    ffmpeg::{monitor::spawn_ffmpeg_monitor, process::FFmpegProcess},
+    ffmpeg::{
+        builder::build_ffmpeg_args,
+        capture::{VideoDeviceKind, list_video_devices},
+        monitor::spawn_ffmpeg_monitor,
+        process::FFmpegProcess,
+    },
     ring_buffer::RingBuffer,
     routes::build_router,
+    runtime::restart_capture,
+    state::CaptureConfig,
 };
 
 #[tokio::main]
@@ -28,7 +36,18 @@ async fn main() {
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(30_000))); // 30s ring buffer
 
     // --- shared daemon state ---
+    let initial_devices = list_video_devices();
+    let default_video = initial_devices
+        .iter()
+        .find(|d| matches!(d.kind, VideoDeviceKind::Screen))
+        .or_else(|| initial_devices.first())
+        .expect("no video devices found");
+
     let state: SharedState = Arc::new(Mutex::new(DaemonState {
+        capture_config: CaptureConfig {
+            video_device_id: default_video.id.clone(),
+            framerate: 60,
+        },
         buffering: true,
         buffer_seconds: 0,
         clip_count: 0,
@@ -40,23 +59,7 @@ async fn main() {
     // --- start ffmpeg immediately ---
     {
         let mut guard = state.lock().unwrap();
-        match FFmpegProcess::spawn() {
-            Ok(mut proc) => {
-                proc.drain_stderr();
-
-                // start stdout reader when ffmpeg is started
-                let rb = guard.ring_buffer.clone();
-                proc.start_stdout_reader(rb);
-
-                guard.ffmpeg = Some(proc);
-
-                println!("[ffmpeg] started");
-            }
-            Err(err) => {
-                println!("[ffmpeg] failed to start: {}", err);
-                guard.ffmpeg = None;
-            }
-        }
+        restart_capture(&mut guard).expect("failed to start capture")
     }
 
     // --- spawn background tasks ---

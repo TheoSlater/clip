@@ -1,10 +1,11 @@
 use axum::{Json, extract::State};
 
-use crate::state::SharedState;
+use crate::state::{CaptureConfig, SharedState};
 use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct StatusResponse {
+    pub capture_config: CaptureConfig,
     pub buffering: bool,
     pub buffer_seconds: u32,
     pub clip_count: u32,
@@ -15,6 +16,7 @@ pub async fn get_status(State(state): State<SharedState>) -> Json<StatusResponse
     let guard = state.lock().unwrap();
 
     Json(StatusResponse {
+        capture_config: guard.capture_config.clone(),
         buffering: guard.buffering,
         buffer_seconds: guard.buffer_seconds,
         clip_count: guard.clip_count,
