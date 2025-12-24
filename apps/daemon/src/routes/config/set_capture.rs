@@ -1,5 +1,5 @@
 use crate::{
-    ffmpeg::capture::list_video_devices,
+    capture_devices::list_video_devices,
     runtime::restart_capture,
     state::{CaptureConfig, SharedState},
 };
@@ -16,12 +16,18 @@ pub async fn set_capture_config(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    if let Some(audio_id) = &new_config.audio_device_id {
+        if audio_id != "loopback" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
     let mut guard = state.lock().unwrap();
 
     // Save config
     guard.capture_config = new_config.clone();
 
-    // Restart ffmpeg with new config
+    // Restart capture with new config
     restart_capture(&mut guard).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(StatusCode::OK)

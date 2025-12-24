@@ -11,8 +11,8 @@ pub struct ShutdownResponse {
 pub async fn shutdown(State(state): State<SharedState>) -> Json<ShutdownResponse> {
     let mut guard = state.lock().unwrap();
 
-    if let Some(ffmpeg) = guard.ffmpeg.take() {
-        ffmpeg.kill();
+    if let Some(capture) = guard.capture.take() {
+        capture.stop();
     }
 
     if let Some(tx) = guard.shutdown_tx.take() {

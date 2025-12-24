@@ -1,22 +1,14 @@
 use std::io;
 
-use crate::{
-    ffmpeg::{builder::build_ffmpeg_args, process::FFmpegProcess},
-    state::DaemonState,
-};
+use crate::{gst_capture::GstCapture, state::DaemonState};
 
 /// Start or restart capture to match the current CaptureConfig.
-///
-/// This function is the ONLY place that:
-/// - spawns ffmpeg
-/// - kills ffmpeg
-/// - wires stdout/stderr
-/// - clears the ring buffer
+/// This function is the ONLY place that starts or stops capture.
 pub fn restart_capture(state: &mut DaemonState) -> Result<(), io::Error> {
-    // Kill existing ffmpeg (if any)
-    if let Some(old) = state.ffmpeg.take() {
-        println!("[ffmpeg] killing existing process");
-        old.kill();
+    // Stop existing capture (if any)
+    if let Some(old) = state.capture.take() {
+        println!("[capture] stopping existing pipeline");
+        old.stop();
     }
 
     // Clear ring buffer (new timeline)
@@ -25,20 +17,10 @@ pub fn restart_capture(state: &mut DaemonState) -> Result<(), io::Error> {
         rb.clear();
     }
 
-    // Build ffmpeg args from config
-    let args = build_ffmpeg_args(&state.capture_config);
-
-    // Spawn ffmpeg
-    let mut proc = FFmpegProcess::spawn(args)?;
-
-    // Attach IO
-    proc.drain_stderr();
-    proc.start_stdout_reader(state.ring_buffer.clone());
-
-    // Store handle
-    state.ffmpeg = Some(proc);
-
-    println!("[ffmpeg] capture started");
+    // Start capture pipeline
+    let capture = GstCapture::start(&state.capture_config, state.ring_buffer.clone())?;
+    state.capture = Some(capture);
+    println!("[capture] pipeline started");
 
     Ok(())
 }

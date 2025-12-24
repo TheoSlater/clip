@@ -1,4 +1,6 @@
-mod ffmpeg;
+mod capture_devices;
+mod capture_monitor;
+mod gst_capture;
 mod ring_buffer;
 mod routes;
 mod runtime;
@@ -14,10 +16,8 @@ use std::{
 use tokio::{net::TcpListener, sync::oneshot};
 
 use crate::{
-    ffmpeg::{
-        capture::{VideoDeviceKind, list_video_devices},
-        monitor::spawn_ffmpeg_monitor,
-    },
+    capture_devices::{VideoDeviceKind, list_video_devices},
+    capture_monitor::spawn_capture_monitor,
     ring_buffer::RingBuffer,
     routes::build_router,
     runtime::restart_capture,
@@ -43,24 +43,24 @@ async fn main() {
     let state: SharedState = Arc::new(Mutex::new(DaemonState {
         capture_config: CaptureConfig {
             video_device_id: default_video.id.clone(),
-            audio_device_id: None,
+            audio_device_id: Some("loopback".to_string()),
             framerate: 60,
         },
         buffering: true,
         buffer_seconds: 0,
         shutdown_tx: Some(shutdown_tx),
-        ffmpeg: None,
+        capture: None,
         ring_buffer: ring_buffer.clone(),
     }));
 
-    // --- start ffmpeg immediately ---
+    // --- start capture immediately ---
     {
         let mut guard = state.lock().unwrap();
         restart_capture(&mut guard).expect("failed to start capture")
     }
 
     // --- spawn background tasks ---
-    spawn_ffmpeg_monitor(state.clone());
+    spawn_capture_monitor(state.clone());
 
     // --- server ---
     let app: Router = build_router(state);
