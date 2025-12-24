@@ -1,10 +1,10 @@
 import { addToast } from "@heroui/react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AudioDevice } from "../types/devices/AudioDevice";
 import { useApiClient } from "./useApiClient";
 
 export const useAudioDevices = () => {
-    const { get, post } = useApiClient();
+    const { get } = useApiClient();
 
     return {
         query: useQuery({
@@ -20,11 +20,6 @@ export const useAudioDevices = () => {
                     severity: "danger",
                 });
                 return true;
-            },
-        }),
-        mutation: useMutation({
-            mutationFn: ({ deviceId }: { deviceId: string }) => {
-                return post("/config/capture", {});
             },
         }),
     };

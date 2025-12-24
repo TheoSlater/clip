@@ -6,17 +6,19 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     routes::{
-        config::set_capture_config,
         devices::{get_audio_devices, get_video_devices},
+        encoders::get_video_encoders,
+        settings::{get_settings, update_settings},
     },
     state::SharedState,
 };
 
 pub mod clip;
 pub mod clips;
-pub mod config;
 pub mod devices;
+pub mod encoders;
 pub mod get_status;
+pub mod settings;
 pub mod shutdown;
 
 pub fn build_router(state: SharedState) -> Router {
@@ -29,7 +31,9 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/status", get(get_status::get_status))
         .route("/devices/video", get(get_video_devices))
         .route("/devices/audio", get(get_audio_devices))
-        .route("/config/capture", post(set_capture_config))
+        .route("/encoders/video", get(get_video_encoders))
+        .route("/settings", get(get_settings))
+        .route("/settings", post(update_settings))
         .route("/clip", post(clip::clip))
         .route("/clips", get(clips::list_clips))
         .route("/shutdown", post(shutdown::shutdown))

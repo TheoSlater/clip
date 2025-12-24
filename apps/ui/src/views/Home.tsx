@@ -1,19 +1,9 @@
-import { addToast, Button, Select, SelectItem } from "@heroui/react";
+import { Button } from "@heroui/react";
+import { SettingsIcon } from "lucide-react";
 import { useState } from "react";
-import { useAudioDevices } from "../hooks/useAudioDevices";
-import { useVideoDevices } from "../hooks/useVideoDevices";
+import { Link } from "react-router";
 
 export const Home = () => {
-    const {
-        query: { data: videoDevices },
-        mutation: { mutate: mutateVideoDevice },
-    } = useVideoDevices();
-
-    const {
-        query: { data: audioDevices },
-        mutation: { mutate: mutateAudioDevice },
-    } = useAudioDevices();
-
     const [textRes, setTextRes] = useState("{}");
 
     async function handleClick() {
@@ -40,67 +30,13 @@ export const Home = () => {
         setTextRes(await response.text());
     }
 
-    const handleChangeVideoDevice = (
-        e: React.ChangeEvent<HTMLSelectElement>,
-    ) => {
-        // find highest framerate in capabilities
-        const device = videoDevices?.find((d) => d.id === e.target.value);
-        if (!device) {
-            addToast({
-                title: "Device not found",
-                severity: "danger",
-                color: "danger",
-            });
-            return;
-        }
-
-        mutateVideoDevice({
-            deviceId: e.target.value,
-            framerate: 30,
-        });
-    };
-
-    const handleChangeAudioDevice = (
-        e: React.ChangeEvent<HTMLSelectElement>,
-    ) => {
-        mutateAudioDevice({
-            deviceId: e.target.value,
-        });
-    };
-
     return (
         <main className="flex flex-col items-center h-dvh gap-4 p-8 bg-black">
-            {videoDevices && (
-                <Select
-                    label="Select Video Device"
-                    onChange={handleChangeVideoDevice}
-                >
-                    {videoDevices.map((device) => (
-                        <SelectItem key={device.id} textValue={device.label}>
-                            {device.label}{" "}
-                            <p className="text-xs text-gray-400">
-                                ({device.id})
-                            </p>
-                        </SelectItem>
-                    ))}
-                </Select>
-            )}
-
-            {audioDevices && (
-                <Select
-                    label="Select Audio Device"
-                    onChange={handleChangeAudioDevice}
-                >
-                    {audioDevices.map((device) => (
-                        <SelectItem key={device.id} textValue={device.label}>
-                            {device.label}{" "}
-                            <p className="text-xs text-gray-400">
-                                ({device.id})
-                            </p>
-                        </SelectItem>
-                    ))}
-                </Select>
-            )}
+            <Link to="/settings">
+                <Button isIconOnly>
+                    <SettingsIcon />
+                </Button>
+            </Link>
 
             <Button color="primary" onPress={handleClick}>
                 Status

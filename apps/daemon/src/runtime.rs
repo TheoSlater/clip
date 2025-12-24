@@ -2,7 +2,7 @@ use std::io;
 
 use crate::{gst_capture::GstCapture, state::DaemonState};
 
-/// Start or restart capture to match the current CaptureConfig.
+/// Start or restart capture to match the current UserSettings.
 /// This function is the ONLY place that starts or stops capture.
 pub fn restart_capture(state: &mut DaemonState) -> Result<(), io::Error> {
     // Stop existing capture (if any)
@@ -18,7 +18,7 @@ pub fn restart_capture(state: &mut DaemonState) -> Result<(), io::Error> {
     }
 
     // Start capture pipeline
-    let capture = GstCapture::start(&state.capture_config, state.ring_buffer.clone())?;
+    let capture = GstCapture::start(&state.settings, state.ring_buffer.clone())?;
     state.capture = Some(capture);
     println!("[capture] pipeline started");
 

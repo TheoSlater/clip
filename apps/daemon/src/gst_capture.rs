@@ -12,8 +12,9 @@ use gstreamer as gst;
 use gstreamer_app as gst_app;
 
 use crate::{
+    encoders,
     ring_buffer::{Packet, RingBuffer},
-    state::CaptureConfig,
+    settings::UserSettings,
 };
 
 pub struct GstCapture {
@@ -22,10 +23,10 @@ pub struct GstCapture {
 }
 
 impl GstCapture {
-    pub fn start(config: &CaptureConfig, ring_buffer: Arc<Mutex<RingBuffer>>) -> io::Result<Self> {
+    pub fn start(config: &UserSettings, ring_buffer: Arc<Mutex<RingBuffer>>) -> io::Result<Self> {
         gst::init().map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-        if config.audio_device_id.as_deref() != Some("loopback") {
+        if config.audio_device_id != "loopback" {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "audio device must be loopback",
@@ -37,30 +38,62 @@ impl GstCapture {
 
         let video_src = make_element("d3d11screencapturesrc")?;
         set_bool_property(&video_src, "do-timestamp", true);
+
         if let Some(monitor) = monitor_index_from_id(&config.video_device_id) {
             set_i32_property(&video_src, "monitor-index", monitor);
         }
 
         let d3d11convert = make_element("d3d11convert")?;
-        let d3d11download = make_element("d3d11download")?;
-        let videoconvert = make_element("videoconvert")?;
-        let videorate = make_element("videorate")?;
-        let video_capsfilter = make_element("capsfilter")?;
-        let video_caps = gst::Caps::builder("video/x-raw")
-            .field("format", "I420")
-            .field("framerate", gst::Fraction::new(config.framerate as i32, 1))
-            .build();
-        video_capsfilter.set_property("caps", &video_caps);
 
-        let video_encoder = make_video_encoder(config.framerate)?;
+        let video_capsfilter = make_element("capsfilter")?;
+
+        let encoder_info =
+            encoders::find_video_encoder(&config.video_encoder_id)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "selected encoder not available")
+            })?;
+        let requires_d3d11 = encoder_info.required_memory.as_deref() == Some("D3D11Memory");
+
+        if encoder_info.required_memory.as_deref() == Some("D3D12Memory") {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "selected encoder requires D3D12 memory, which is not supported",
+            ));
+        }
+
+        let caps = if requires_d3d11 {
+            let structure = gst::Structure::builder("video/x-raw")
+                .field("format", "NV12")
+                .field("framerate", gst::Fraction::new(config.framerate as i32, 1))
+                .build();
+            let features = gst::CapsFeatures::new(["memory:D3D11Memory"]);
+            gst::Caps::builder_full_with_features(features.clone())
+                .structure_with_features(structure, features)
+                .build()
+        } else {
+            gst::Caps::builder("video/x-raw")
+                .field("format", "NV12")
+                .field("framerate", gst::Fraction::new(config.framerate as i32, 1))
+                .build()
+        };
+
+        video_capsfilter.set_property("caps", &caps);
+
+        let video_encoder = make_video_encoder(
+            &config.video_encoder_id,
+            config.framerate,
+            config.bitrate_kbps,
+        )?;
+
         let h264parse = make_element("h264parse")?;
         set_i32_property(&h264parse, "config-interval", 1);
+
         let h264_capsfilter = make_element("capsfilter")?;
         let h264_caps = gst::Caps::builder("video/x-h264")
             .field("stream-format", "byte-stream")
             .field("alignment", "au")
             .build();
         h264_capsfilter.set_property("caps", &h264_caps);
+
         let video_queue = make_queue()?;
 
         let audio_src = make_element("wasapisrc")?;
@@ -96,47 +129,79 @@ impl GstCapture {
         appsink.set_property("emit-signals", &true);
         appsink.set_property("sync", &false);
         appsink.set_property("async", &false);
-        appsink.set_property("drop", &false);
-        appsink.set_property("max-buffers", &0u32);
+        appsink.set_property("drop", &true);
+        appsink.set_property("max-buffers", &4u32);
 
-        pipeline
-            .add_many(&[
-                &video_src,
-                &d3d11convert,
-                &d3d11download,
-                &videoconvert,
-                &videorate,
-                &video_capsfilter,
-                &video_encoder,
-                &h264parse,
-                &h264_capsfilter,
-                &video_queue,
-                &audio_src,
-                &audioconvert,
-                &audioresample,
-                &audiorate,
-                &audio_capsfilter,
-                &audio_encoder,
-                &aacparse,
-                &audio_queue,
-                &mux,
-                appsink.upcast_ref(),
-            ])
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        let d3d11download = if requires_d3d11 {
+            None
+        } else {
+            Some(make_element("d3d11download")?)
+        };
 
-        gst::Element::link_many(&[
+        let videoconvert = if requires_d3d11 {
+            None
+        } else {
+            Some(make_element("videoconvert")?)
+        };
+
+        let mut elements: Vec<&gst::Element> = vec![
             &video_src,
             &d3d11convert,
-            &d3d11download,
-            &videoconvert,
-            &videorate,
             &video_capsfilter,
             &video_encoder,
             &h264parse,
             &h264_capsfilter,
             &video_queue,
-        ])
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link video chain"))?;
+            &audio_src,
+            &audioconvert,
+            &audioresample,
+            &audiorate,
+            &audio_capsfilter,
+            &audio_encoder,
+            &aacparse,
+            &audio_queue,
+            &mux,
+            appsink.upcast_ref(),
+        ];
+
+        if let Some(download) = d3d11download.as_ref() {
+            elements.insert(2, download);
+        }
+
+        if let Some(convert) = videoconvert.as_ref() {
+            let insert_index = if d3d11download.is_some() { 3 } else { 2 };
+            elements.insert(insert_index, convert);
+        }
+
+        pipeline
+            .add_many(&elements)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+
+        fn link(a: &gst::Element, b: &gst::Element) -> io::Result<()> {
+            a.link(b).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("failed to link {} -> {}", a.name(), b.name()),
+                )
+            })
+        }
+
+        link(&video_src, &d3d11convert)?;
+        if let Some(download) = d3d11download.as_ref() {
+            link(&d3d11convert, download)?;
+            if let Some(convert) = videoconvert.as_ref() {
+                link(download, convert)?;
+                link(convert, &video_capsfilter)?;
+            } else {
+                link(download, &video_capsfilter)?;
+            }
+        } else {
+            link(&d3d11convert, &video_capsfilter)?;
+        }
+        link(&video_capsfilter, &video_encoder)?;
+        link(&video_encoder, &h264parse)?;
+        link(&h264parse, &h264_capsfilter)?;
+        link(&h264_capsfilter, &video_queue)?;
 
         gst::Element::link_many(&[
             &audio_src,
@@ -222,27 +287,25 @@ fn make_element(name: &str) -> io::Result<gst::Element> {
         .map_err(|_| io::Error::new(io::ErrorKind::Other, format!("missing element {}", name)))
 }
 
-fn make_video_encoder(framerate: u32) -> io::Result<gst::Element> {
-    if let Ok(enc) = gst::ElementFactory::make("x264enc").build() {
-        let bitrate = 20_000u32;
-        set_str_property(&enc, "bitrate", &bitrate.to_string());
-        set_str_property(&enc, "speed-preset", "medium");
-        set_bool_property(&enc, "byte-stream", true);
+fn make_video_encoder(
+    encoder_id: &str,
+    framerate: u32,
+    bitrate_kbps: u32,
+) -> io::Result<gst::Element> {
+    let enc = gst::ElementFactory::make(encoder_id).build().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("missing encoder {}", encoder_id),
+        )
+    })?;
 
-        let key_int_max = framerate.saturating_mul(2);
-        set_str_property(&enc, "key-int-max", &key_int_max.to_string());
+    let gop_size: u32 = framerate.saturating_mul(2).max(1);
 
-        return Ok(enc);
-    }
+    set_u32_property(&enc, "bitrate", bitrate_kbps);
+    set_u32_property(&enc, "key-int-max", gop_size);
+    set_bool_property(&enc, "zero-latency", true);
 
-    if let Ok(enc) = gst::ElementFactory::make("openh264enc").build() {
-        return Ok(enc);
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::Other,
-        "missing H.264 encoder (x264enc or openh264enc)",
-    ))
+    Ok(enc)
 }
 
 fn make_audio_encoder() -> io::Result<gst::Element> {

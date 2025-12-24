@@ -1,11 +1,10 @@
 import { addToast } from "@heroui/react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { CaptureConfig } from "../types/CaptureConfig";
+import { useQuery } from "@tanstack/react-query";
 import { VideoDevice } from "../types/devices/VideoDevice";
 import { useApiClient } from "./useApiClient";
 
 export const useVideoDevices = () => {
-    const { get, post } = useApiClient();
+    const { get } = useApiClient();
 
     return {
         query: useQuery({
@@ -21,20 +20,6 @@ export const useVideoDevices = () => {
                     severity: "danger",
                 });
                 return true;
-            },
-        }),
-        mutation: useMutation({
-            mutationFn: ({
-                deviceId,
-                framerate,
-            }: {
-                deviceId: string;
-                framerate: number;
-            }) => {
-                return post<undefined, CaptureConfig>("/config/capture", {
-                    video_device_id: deviceId,
-                    framerate,
-                });
             },
         }),
     };

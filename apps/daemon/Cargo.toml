@@ -13,6 +13,7 @@ tower-http = { version = "0.5", features = ["cors"] }
 chrono = { version = "0.4", features = ["clock"] }
 gstreamer = "0.22"
 gstreamer-app = "0.22"
+directories = "5.0"
 windows = { version = "0.52", features = [
     "Win32_Graphics_Gdi",
     "Win32_Foundation"
