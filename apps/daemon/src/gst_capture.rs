@@ -9,6 +9,7 @@ use std::{
 
 use gst::prelude::*;
 use gstreamer as gst;
+use gstreamer::glib;
 use gstreamer_app as gst_app;
 
 use crate::{
@@ -221,6 +222,22 @@ impl GstCapture {
         mux.link(&appsink)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link mux to appsink"))?;
 
+        let keyframe_ring_buffer = ring_buffer.clone();
+        let h264parse_src = h264parse
+            .static_pad("src")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing h264parse src pad"))?;
+        h264parse_src.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            if let Some(buffer) = info.buffer() {
+                if !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
+                    if let Some(pts) = buffer.dts_or_pts() {
+                        let mut guard = keyframe_ring_buffer.lock().unwrap();
+                        guard.push_keyframe_pts(pts.mseconds());
+                    }
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
+
         let started_at = Instant::now();
         let ring_buffer_clone = ring_buffer.clone();
         let sink_started_at = started_at;
@@ -238,7 +255,10 @@ impl GstCapture {
                         None => return Ok(gst::FlowSuccess::Ok),
                     };
 
-                    let pts_ms = sink_started_at.elapsed().as_millis() as u64;
+                    let pts_ms = buffer
+                        .dts_or_pts()
+                        .map(|pts| pts.mseconds())
+                        .unwrap_or_else(|| sink_started_at.elapsed().as_millis() as u64);
 
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let data = map.as_slice().to_vec();
@@ -299,11 +319,13 @@ fn make_video_encoder(
         )
     })?;
 
-    let gop_size: u32 = framerate.saturating_mul(2).max(1);
+    let gop_size: u32 = framerate.max(1);
 
     set_u32_property(&enc, "bitrate", bitrate_kbps);
+    set_u32_property(&enc, "gop-size", gop_size);
     set_u32_property(&enc, "key-int-max", gop_size);
     set_bool_property(&enc, "zero-latency", true);
+    set_bool_property(&enc, "insert-sps-pps", true);
 
     Ok(enc)
 }
@@ -431,8 +453,21 @@ fn set_i32_property(element: &gst::Element, name: &str, value: i32) {
 }
 
 fn set_u32_property(element: &gst::Element, name: &str, value: u32) {
-    if element.find_property(name).is_some() {
+    let Some(spec) = element.find_property(name) else {
+        return;
+    };
+
+    let ty = spec.value_type();
+
+    if ty == glib::Type::U32 {
         element.set_property(name, &value);
+    } else if ty == glib::Type::I32 {
+        let v = value.min(i32::MAX as u32) as i32;
+        element.set_property(name, &v);
+    } else if ty == glib::Type::U64 {
+        element.set_property(name, &(value as u64));
+    } else if ty == glib::Type::I64 {
+        element.set_property(name, &(value as i64));
     }
 }
 

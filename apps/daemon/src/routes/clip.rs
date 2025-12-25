@@ -22,7 +22,7 @@ pub async fn clip(State(state): State<SharedState>) -> Result<Json<ClipResponse>
         guard.ring_buffer.clone()
     };
 
-    let packets: Vec<Packet> = ring_buffer.lock().unwrap().snapshot();
+    let packets: Vec<Packet> = ring_buffer.lock().unwrap().drain_from_keyframe();
 
     if packets.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -47,10 +47,9 @@ pub async fn clip(State(state): State<SharedState>) -> Result<Json<ClipResponse>
         bytes_written += packet.data.len();
     }
 
-    // Compute duration
-    let duration_ms = {
-        let guard = state.lock().unwrap();
-        guard.ring_buffer.lock().unwrap().duration_ms()
+    let duration_ms = match (packets.first(), packets.last()) {
+        (Some(first), Some(last)) => last.pts_ms.saturating_sub(first.pts_ms),
+        _ => 0,
     };
 
     Ok(Json(ClipResponse {

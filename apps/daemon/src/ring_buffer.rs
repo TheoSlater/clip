@@ -11,6 +11,7 @@ pub struct Packet {
 pub struct RingBuffer {
     max_duration_ms: u64,
     packets: VecDeque<Packet>,
+    keyframes: VecDeque<u64>,
 }
 
 impl RingBuffer {
@@ -18,12 +19,24 @@ impl RingBuffer {
         Self {
             max_duration_ms,
             packets: VecDeque::new(),
+            keyframes: VecDeque::new(),
         }
     }
 
     pub fn push(&mut self, packet: Packet) {
         self.packets.push_back(packet);
         self.evict_old_packets();
+    }
+
+    pub fn push_keyframe_pts(&mut self, pts_ms: u64) {
+        if self
+            .keyframes
+            .back()
+            .map(|last| *last < pts_ms)
+            .unwrap_or(true)
+        {
+            self.keyframes.push_back(pts_ms);
+        }
     }
 
     fn evict_old_packets(&mut self) {
@@ -39,6 +52,18 @@ impl RingBuffer {
             } else {
                 break;
             }
+        }
+
+        if let Some(oldest) = self.packets.front() {
+            while let Some(keyframe) = self.keyframes.front() {
+                if *keyframe < oldest.pts_ms {
+                    self.keyframes.pop_front();
+                } else {
+                    break;
+                }
+            }
+        } else {
+            self.keyframes.clear();
         }
     }
 
@@ -62,8 +87,31 @@ impl RingBuffer {
         }
     }
 
+    pub fn drain_from_keyframe(&mut self) -> Vec<Packet> {
+        let keyframe_start = self.keyframes.front().cloned();
+        let packets: Vec<Packet> = self.packets.iter().cloned().collect();
+        self.clear();
+
+        if let Some(start) = keyframe_start {
+            let has_packet_after = packets
+                .last()
+                .map(|packet| packet.pts_ms >= start)
+                .unwrap_or(false);
+
+            if has_packet_after {
+                return packets
+                    .into_iter()
+                    .filter(|packet| packet.pts_ms >= start)
+                    .collect();
+            }
+        }
+
+        packets
+    }
+
     pub fn clear(&mut self) {
         self.packets.clear();
+        self.keyframes.clear();
     }
 }
 
