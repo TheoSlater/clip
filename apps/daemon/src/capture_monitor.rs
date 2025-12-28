@@ -1,7 +1,7 @@
 use std::time::Duration;
 use tokio::time::sleep;
 
-use crate::{runtime::restart_capture, state::SharedState};
+use crate::{logger, runtime::restart_capture, state::SharedState};
 
 pub fn spawn_capture_monitor(state: SharedState) {
     tokio::spawn(async move {
@@ -12,7 +12,7 @@ pub fn spawn_capture_monitor(state: SharedState) {
 
             // Shutdown path
             if guard.shutdown_tx.is_none() {
-                if let Some(capture) = guard.capture.take() {
+                if let Some(mut capture) = guard.capture.take() {
                     capture.stop();
                 }
                 break;
@@ -26,7 +26,7 @@ pub fn spawn_capture_monitor(state: SharedState) {
 
             if needs_restart {
                 if let Err(err) = restart_capture(&mut guard) {
-                    eprintln!("[capture] restart failed: {}", err);
+                    logger::error("capture", format!("restart failed: {}", err));
                 }
             }
         }

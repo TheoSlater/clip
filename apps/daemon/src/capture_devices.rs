@@ -3,7 +3,6 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub enum VideoDeviceKind {
     Screen,
-    Camera,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +25,8 @@ pub struct AudioDevice {
 #[cfg(target_os = "windows")]
 mod windows {
     use crate::capture_devices::{AudioDevice, VideoDevice, VideoDeviceKind};
+    use gst::prelude::*;
+    use gstreamer as gst;
     use windows::{
         Win32::Foundation::{BOOL, LPARAM},
         Win32::Graphics::Gdi::{
@@ -84,12 +85,62 @@ mod windows {
         devices
     }
 
-    pub fn list_audio_devices() -> Vec<AudioDevice> {
-        vec![AudioDevice {
-            id: "loopback".to_string(),
-            label: "System Audio (Loopback)".to_string(),
-            is_input: false,
-        }]
+    pub fn list_microphone_devices() -> Result<Vec<AudioDevice>, String> {
+        gst::init().map_err(|err| err.to_string())?;
+
+        let monitor = gst::DeviceMonitor::new();
+        let audio_caps = gst::Caps::builder("audio/x-raw").build();
+        monitor.add_filter(None, Some(&audio_caps));
+
+        monitor.start().map_err(|err| err.to_string())?;
+        let devices = monitor.devices();
+        monitor.stop();
+
+        let mut microphones = Vec::new();
+
+        for device in devices {
+            let device_class = device.device_class();
+            if !device_class.contains("Audio/Source") || device_class.contains("Audio/Sink") {
+                continue;
+            }
+
+            let props = device.properties();
+            let is_loopback = props
+                .as_ref()
+                .and_then(|props| props.get::<bool>("loopback").ok())
+                .unwrap_or(false);
+
+            if is_loopback {
+                continue;
+            }
+
+            let id = props
+                .as_ref()
+                .and_then(|props| props.get::<String>("device").ok())
+                .or_else(|| {
+                    props
+                        .as_ref()
+                        .and_then(|props| props.get::<String>("device-id").ok())
+                })
+                .or_else(|| {
+                    props
+                        .as_ref()
+                        .and_then(|props| props.get::<String>("device.id").ok())
+                });
+
+            let Some(id) = id else {
+                continue;
+            };
+
+            let label = device.display_name().to_string();
+            microphones.push(AudioDevice {
+                id,
+                label,
+                is_input: true,
+            });
+        }
+
+        Ok(microphones)
     }
 }
 
@@ -104,6 +155,10 @@ mod other {
     pub fn list_audio_devices() -> Vec<AudioDevice> {
         Vec::new()
     }
+
+    pub fn list_microphone_devices() -> Vec<AudioDevice> {
+        Vec::new()
+    }
 }
 
 pub fn list_video_devices() -> Vec<VideoDevice> {
@@ -114,10 +169,10 @@ pub fn list_video_devices() -> Vec<VideoDevice> {
     return other::list_video_devices();
 }
 
-pub fn list_audio_devices() -> Vec<AudioDevice> {
+pub fn list_microphone_devices() -> Vec<AudioDevice> {
     #[cfg(target_os = "windows")]
-    return windows::list_audio_devices();
+    return windows::list_microphone_devices().unwrap_or_default();
 
     #[cfg(not(target_os = "windows"))]
-    return other::list_audio_devices();
+    return other::list_microphone_devices();
 }

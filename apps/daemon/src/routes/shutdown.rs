@@ -11,7 +11,7 @@ pub struct ShutdownResponse {
 pub async fn shutdown(State(state): State<SharedState>) -> Json<ShutdownResponse> {
     let mut guard = state.lock().unwrap();
 
-    if let Some(capture) = guard.capture.take() {
+    if let Some(mut capture) = guard.capture.take() {
         capture.stop();
     }
 

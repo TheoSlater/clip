@@ -13,29 +13,45 @@ use gstreamer::glib;
 use gstreamer_app as gst_app;
 
 use crate::{
-    encoders,
+    encoders, logger,
     ring_buffer::{Packet, RingBuffer},
     settings::UserSettings,
 };
 
+/// Capture core boundary:
+/// - Owns the GStreamer pipeline lifecycle and elements.
+/// - Emits encoded packets into the ring buffer.
+/// - Exposes explicit capture state (Starting/Running/Failed/Stopped).
+/// - Does NOT know about routes, UI state, or settings mutation.
+#[derive(Debug, Clone)]
+pub enum CaptureState {
+    Starting,
+    Running,
+    Failed(String),
+    Stopped,
+}
+
 pub struct GstCapture {
     pipeline: gst::Pipeline,
-    has_error: Arc<AtomicBool>,
+    appsink: gst_app::AppSink,
+    state: Arc<Mutex<CaptureState>>,
+    stop_flag: Arc<AtomicBool>,
+    bus_thread: Option<std::thread::JoinHandle<()>>,
+    callback_guard: Arc<AtomicBool>,
+    h264_probe: Option<(gst::Pad, gst::PadProbeId)>,
 }
 
 impl GstCapture {
     pub fn start(config: &UserSettings, ring_buffer: Arc<Mutex<RingBuffer>>) -> io::Result<Self> {
+        let callback_guard = Arc::new(AtomicBool::new(false));
+
         gst::init().map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-        if config.audio_device_id != "loopback" {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "audio device must be loopback",
-            ));
-        }
+        validate_config(config)?;
 
         let pipeline = gst::Pipeline::new();
-        let has_error = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(CaptureState::Starting));
+        let stop_flag = Arc::new(AtomicBool::new(false));
 
         let video_src = make_element("d3d11screencapturesrc")?;
         set_bool_property(&video_src, "do-timestamp", true);
@@ -97,27 +113,115 @@ impl GstCapture {
 
         let video_queue = make_queue()?;
 
-        let audio_src = make_element("wasapisrc")?;
-        set_bool_property(&audio_src, "loopback", true);
-        set_bool_property(&audio_src, "do-timestamp", true);
-        set_bool_property(&audio_src, "provide-clock", true);
-        set_bool_property(&audio_src, "low-latency", false);
+        let system_audio_enabled = config.system_audio_enabled;
+        let mic_device = config.mic_device_id.as_ref().filter(|id| !id.is_empty());
+        let mic_enabled = mic_device.is_some();
+        let has_audio = system_audio_enabled || mic_enabled;
+        let mix_audio = system_audio_enabled && mic_enabled;
 
-        let audioconvert = make_element("audioconvert")?;
-        let audioresample = make_element("audioresample")?;
-        let audiorate = make_element("audiorate")?;
-        let audio_capsfilter = make_element("capsfilter")?;
-        let audio_caps = gst::Caps::builder("audio/x-raw")
-            .field("rate", 48_000i32)
-            .field("channels", 2i32)
-            .build();
-        audio_capsfilter.set_property("caps", &audio_caps);
+        let audio_caps = if has_audio {
+            Some(
+                gst::Caps::builder("audio/x-raw")
+                    .field("rate", 48_000i32)
+                    .field("channels", 2i32)
+                    .build(),
+            )
+        } else {
+            None
+        };
 
-        let audio_encoder = make_audio_encoder()?;
-        let aacparse = make_element("aacparse")?;
-        set_str_property(&aacparse, "output-format", "adts");
-        set_str_property(&aacparse, "format", "adts");
-        let audio_queue = make_queue()?;
+        let audio_src = if system_audio_enabled {
+            let src = make_element("wasapisrc")?;
+            set_bool_property(&src, "loopback", true);
+            set_bool_property(&src, "do-timestamp", true);
+            set_bool_property(&src, "provide-clock", true);
+            set_bool_property(&src, "low-latency", false);
+            Some(src)
+        } else {
+            None
+        };
+
+        let audioconvert = if system_audio_enabled {
+            Some(make_element("audioconvert")?)
+        } else {
+            None
+        };
+        let audioresample = if system_audio_enabled {
+            Some(make_element("audioresample")?)
+        } else {
+            None
+        };
+        let audiorate = if system_audio_enabled {
+            Some(make_element("audiorate")?)
+        } else {
+            None
+        };
+        let audio_capsfilter = if system_audio_enabled {
+            Some(make_element("capsfilter")?)
+        } else {
+            None
+        };
+        if let (Some(filter), Some(caps)) = (audio_capsfilter.as_ref(), audio_caps.as_ref()) {
+            filter.set_property("caps", caps);
+        }
+
+        let audio_mixer = if mix_audio {
+            Some(make_element("audiomixer")?)
+        } else {
+            None
+        };
+
+        let system_queue = if mix_audio { Some(make_queue()?) } else { None };
+
+        let mic_src = if mic_enabled {
+            let mic = make_element("wasapisrc")?;
+            set_bool_property(&mic, "loopback", false);
+            set_bool_property(&mic, "do-timestamp", true);
+            set_bool_property(&mic, "provide-clock", false);
+            set_bool_property(&mic, "low-latency", false);
+            if let Some(mic_id) = mic_device {
+                set_str_property(&mic, "device", mic_id);
+            }
+            Some(mic)
+        } else {
+            None
+        };
+
+        let mic_convert = mic_src
+            .as_ref()
+            .map(|_| make_element("audioconvert"))
+            .transpose()?;
+        let mic_resample = mic_src
+            .as_ref()
+            .map(|_| make_element("audioresample"))
+            .transpose()?;
+        let mic_rate = mic_src
+            .as_ref()
+            .map(|_| make_element("audiorate"))
+            .transpose()?;
+        let mic_capsfilter = mic_src
+            .as_ref()
+            .map(|_| make_element("capsfilter"))
+            .transpose()?;
+        if let (Some(filter), Some(caps)) = (mic_capsfilter.as_ref(), audio_caps.as_ref()) {
+            filter.set_property("caps", caps);
+        }
+        let mic_queue = mic_src.as_ref().map(|_| make_queue()).transpose()?;
+
+        let audio_encoder = if has_audio {
+            Some(make_audio_encoder()?)
+        } else {
+            None
+        };
+        let aacparse = if has_audio {
+            let parser = make_element("aacparse")?;
+            set_str_property(&parser, "output-format", "adts");
+            set_str_property(&parser, "format", "adts");
+            Some(parser)
+        } else {
+            None
+        };
+        let audio_queue = if has_audio { Some(make_queue()?) } else { None };
 
         let mux = make_element("mpegtsmux")?;
         set_bool_property(&mux, "streamable", true);
@@ -153,14 +257,6 @@ impl GstCapture {
             &h264parse,
             &h264_capsfilter,
             &video_queue,
-            &audio_src,
-            &audioconvert,
-            &audioresample,
-            &audiorate,
-            &audio_capsfilter,
-            &audio_encoder,
-            &aacparse,
-            &audio_queue,
             &mux,
             appsink.upcast_ref(),
         ];
@@ -172,6 +268,55 @@ impl GstCapture {
         if let Some(convert) = videoconvert.as_ref() {
             let insert_index = if d3d11download.is_some() { 3 } else { 2 };
             elements.insert(insert_index, convert);
+        }
+
+        if let Some(element) = audio_src.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audioconvert.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audioresample.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audiorate.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audio_capsfilter.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audio_mixer.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = system_queue.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = mic_src.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = mic_convert.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = mic_resample.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = mic_rate.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = mic_capsfilter.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = mic_queue.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audio_encoder.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = aacparse.as_ref() {
+            elements.push(element);
+        }
+        if let Some(element) = audio_queue.as_ref() {
+            elements.push(element);
         }
 
         pipeline
@@ -204,20 +349,158 @@ impl GstCapture {
         link(&h264parse, &h264_capsfilter)?;
         link(&h264_capsfilter, &video_queue)?;
 
-        gst::Element::link_many(&[
-            &audio_src,
-            &audioconvert,
-            &audioresample,
-            &audiorate,
-            &audio_capsfilter,
-            &audio_encoder,
-            &aacparse,
-            &audio_queue,
-        ])
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link audio chain"))?;
+        if has_audio {
+            if mix_audio {
+                if let (
+                    Some(audio_src),
+                    Some(audioconvert),
+                    Some(audioresample),
+                    Some(audiorate),
+                    Some(audio_capsfilter),
+                    Some(system_queue),
+                    Some(audio_mixer),
+                ) = (
+                    audio_src.as_ref(),
+                    audioconvert.as_ref(),
+                    audioresample.as_ref(),
+                    audiorate.as_ref(),
+                    audio_capsfilter.as_ref(),
+                    system_queue.as_ref(),
+                    audio_mixer.as_ref(),
+                ) {
+                    gst::Element::link_many(&[
+                        audio_src,
+                        audioconvert,
+                        audioresample,
+                        audiorate,
+                        audio_capsfilter,
+                        system_queue,
+                    ])
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::Other, "failed to link system audio")
+                    })?;
+
+                    link_queue_to_mixer(system_queue, audio_mixer, "system")?;
+                }
+
+                if let (
+                    Some(mic),
+                    Some(mic_convert),
+                    Some(mic_resample),
+                    Some(mic_rate),
+                    Some(mic_caps),
+                    Some(mic_queue),
+                    Some(audio_mixer),
+                ) = (
+                    mic_src.as_ref(),
+                    mic_convert.as_ref(),
+                    mic_resample.as_ref(),
+                    mic_rate.as_ref(),
+                    mic_capsfilter.as_ref(),
+                    mic_queue.as_ref(),
+                    audio_mixer.as_ref(),
+                ) {
+                    gst::Element::link_many(&[
+                        mic,
+                        mic_convert,
+                        mic_resample,
+                        mic_rate,
+                        mic_caps,
+                        mic_queue,
+                    ])
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::Other, "failed to link mic chain")
+                    })?;
+
+                    link_queue_to_mixer(mic_queue, audio_mixer, "mic")?;
+                }
+
+                if let (Some(audio_mixer), Some(audio_encoder), Some(aacparse), Some(audio_queue)) = (
+                    audio_mixer.as_ref(),
+                    audio_encoder.as_ref(),
+                    aacparse.as_ref(),
+                    audio_queue.as_ref(),
+                ) {
+                    gst::Element::link_many(&[audio_mixer, audio_encoder, aacparse, audio_queue])
+                        .map_err(|_| {
+                        io::Error::new(io::ErrorKind::Other, "failed to link mixer chain")
+                    })?;
+                }
+            } else if system_audio_enabled {
+                if let (
+                    Some(audio_src),
+                    Some(audioconvert),
+                    Some(audioresample),
+                    Some(audiorate),
+                    Some(audio_capsfilter),
+                    Some(audio_encoder),
+                    Some(aacparse),
+                    Some(audio_queue),
+                ) = (
+                    audio_src.as_ref(),
+                    audioconvert.as_ref(),
+                    audioresample.as_ref(),
+                    audiorate.as_ref(),
+                    audio_capsfilter.as_ref(),
+                    audio_encoder.as_ref(),
+                    aacparse.as_ref(),
+                    audio_queue.as_ref(),
+                ) {
+                    gst::Element::link_many(&[
+                        audio_src,
+                        audioconvert,
+                        audioresample,
+                        audiorate,
+                        audio_capsfilter,
+                        audio_encoder,
+                        aacparse,
+                        audio_queue,
+                    ])
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::Other, "failed to link audio chain")
+                    })?;
+                }
+            } else if mic_enabled {
+                if let (
+                    Some(mic),
+                    Some(mic_convert),
+                    Some(mic_resample),
+                    Some(mic_rate),
+                    Some(mic_caps),
+                    Some(audio_encoder),
+                    Some(aacparse),
+                    Some(audio_queue),
+                ) = (
+                    mic_src.as_ref(),
+                    mic_convert.as_ref(),
+                    mic_resample.as_ref(),
+                    mic_rate.as_ref(),
+                    mic_capsfilter.as_ref(),
+                    audio_encoder.as_ref(),
+                    aacparse.as_ref(),
+                    audio_queue.as_ref(),
+                ) {
+                    gst::Element::link_many(&[
+                        mic,
+                        mic_convert,
+                        mic_resample,
+                        mic_rate,
+                        mic_caps,
+                        audio_encoder,
+                        aacparse,
+                        audio_queue,
+                    ])
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::Other, "failed to link mic chain")
+                    })?;
+                }
+            }
+        }
 
         link_queue_to_mux(&video_queue, &mux, "video")?;
-        link_queue_to_mux(&audio_queue, &mux, "audio")?;
+        if let Some(audio_queue) = audio_queue.as_ref() {
+            link_queue_to_mux(audio_queue, &mux, "audio")?;
+        }
 
         mux.link(&appsink)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link mux to appsink"))?;
@@ -226,7 +509,15 @@ impl GstCapture {
         let h264parse_src = h264parse
             .static_pad("src")
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing h264parse src pad"))?;
-        h264parse_src.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+
+        let guard = callback_guard.clone();
+
+        let probe_id = h264parse_src
+            .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            if guard.load(Ordering::SeqCst) {
+                return gst::PadProbeReturn::Remove;
+            }
+
             if let Some(buffer) = info.buffer() {
                 if !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
                     if let Some(pts) = buffer.dts_or_pts() {
@@ -235,16 +526,23 @@ impl GstCapture {
                     }
                 }
             }
+
             gst::PadProbeReturn::Ok
-        });
+        })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to attach probe"))?;
 
         let started_at = Instant::now();
         let ring_buffer_clone = ring_buffer.clone();
-        let sink_started_at = started_at;
+
+        let callback_guard_clone = callback_guard.clone();
 
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
+                    if callback_guard_clone.load(Ordering::SeqCst) {
+                        return Ok(gst::FlowSuccess::Ok);
+                    }
+
                     let sample = match sink.pull_sample() {
                         Ok(sample) => sample,
                         Err(_) => return Err(gst::FlowError::Error),
@@ -258,7 +556,7 @@ impl GstCapture {
                     let pts_ms = buffer
                         .dts_or_pts()
                         .map(|pts| pts.mseconds())
-                        .unwrap_or_else(|| sink_started_at.elapsed().as_millis() as u64);
+                        .unwrap_or_else(|| started_at.elapsed().as_millis() as u64);
 
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let data = map.as_slice().to_vec();
@@ -272,32 +570,90 @@ impl GstCapture {
                 .build(),
         );
 
-        attach_bus_logger(&pipeline, has_error.clone())?;
-
         let state_change = pipeline.set_state(gst::State::Playing);
         if state_change.is_err() {
+            set_state(
+                &state,
+                CaptureState::Failed("failed to start GStreamer pipeline".to_string()),
+            );
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "failed to start GStreamer pipeline",
             ));
         }
 
+        set_state(&state, CaptureState::Running);
+
+        let bus_thread = spawn_bus_thread(
+            &pipeline,
+            state.clone(),
+            stop_flag.clone(),
+            callback_guard.clone(),
+        )?;
+
         Ok(Self {
             pipeline,
-            has_error,
+            appsink: appsink.clone(),
+            state,
+            stop_flag,
+            bus_thread: Some(bus_thread),
+            callback_guard,
+            h264_probe: Some((h264parse_src, probe_id)),
         })
     }
 
     pub fn is_running(&self) -> bool {
-        if self.has_error.load(Ordering::SeqCst) {
-            return false;
-        }
-
-        self.pipeline.current_state() != gst::State::Null
+        matches!(*self.state.lock().unwrap(), CaptureState::Running)
     }
 
-    pub fn stop(self) {
+    pub fn state(&self) -> CaptureState {
+        self.state.lock().unwrap().clone()
+    }
+
+    pub fn stop(&mut self) {
+        self.stop_inner();
+    }
+
+    fn stop_inner(&mut self) {
+        let should_stop = {
+            let guard = self.state.lock().unwrap();
+            !matches!(*guard, CaptureState::Stopped)
+        };
+
+        if !should_stop {
+            return;
+        }
+
+        logger::info("capture", "stopping pipeline");
+
+        // 1) Stop callbacks FIRST
+        self.appsink
+            .set_callbacks(gst_app::AppSinkCallbacks::builder().build());
+        self.appsink.set_property("emit-signals", &false);
+        self.callback_guard.store(true, Ordering::SeqCst);
+
+        if let Some((pad, probe_id)) = self.h264_probe.take() {
+            pad.remove_probe(probe_id);
+        }
+
+        // 2) Stop bus thread
+        self.stop_flag.store(true, Ordering::SeqCst);
+
+        // 3) Stop pipeline
         let _ = self.pipeline.set_state(gst::State::Null);
+
+        // 4) Join bus thread
+        if let Some(handle) = self.bus_thread.take() {
+            let _ = handle.join();
+        }
+
+        set_state(&self.state, CaptureState::Stopped);
+    }
+}
+
+impl Drop for GstCapture {
+    fn drop(&mut self) {
+        self.stop_inner();
     }
 }
 
@@ -373,30 +729,73 @@ fn link_queue_to_mux(queue: &gst::Element, mux: &gst::Element, label: &str) -> i
     Ok(())
 }
 
-fn attach_bus_logger(pipeline: &gst::Pipeline, has_error: Arc<AtomicBool>) -> io::Result<()> {
+fn link_queue_to_mixer(queue: &gst::Element, mixer: &gst::Element, label: &str) -> io::Result<()> {
+    let queue_src = queue
+        .static_pad("src")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing queue src pad"))?;
+    let mixer_sink = mixer
+        .request_pad_simple("sink_%u")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing mixer sink pad"))?;
+
+    queue_src.link(&mixer_sink).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to link {} to mixer", label),
+        )
+    })?;
+
+    Ok(())
+}
+
+fn validate_config(config: &UserSettings) -> io::Result<()> {
+    if let Some(mic_id) = &config.mic_device_id {
+        if mic_id.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "microphone device id is empty",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn set_state(state: &Arc<Mutex<CaptureState>>, new_state: CaptureState) {
+    let mut guard = state.lock().unwrap();
+    logger::info("capture", format!("state: {:?} -> {:?}", *guard, new_state));
+    *guard = new_state;
+}
+
+fn spawn_bus_thread(
+    pipeline: &gst::Pipeline,
+    state: Arc<Mutex<CaptureState>>,
+    stop_flag: Arc<AtomicBool>,
+    callback_guard: Arc<AtomicBool>,
+) -> io::Result<std::thread::JoinHandle<()>> {
     let bus = pipeline
         .bus()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing pipeline bus"))?;
     let pipeline_name = pipeline.name();
 
-    std::thread::spawn(move || {
-        loop {
-            let message = bus.timed_pop(gst::ClockTime::NONE);
-            let Some(message) = message else {
-                continue;
-            };
+    let handle = std::thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) {
+            let message = bus.timed_pop(gst::ClockTime::from_mseconds(200));
+            let Some(message) = message else { continue };
 
             match message.view() {
                 gst::MessageView::Error(err) => {
+                    callback_guard.store(true, Ordering::SeqCst);
+
                     let src = err
                         .src()
                         .map(|s| s.path_string())
                         .unwrap_or_else(|| "unknown".to_string().into());
-                    eprintln!("[gst] error from {}: {}", src, err.error());
+                    logger::error("gst", format!("error from {}: {}", src, err.error()));
                     if let Some(debug) = err.debug() {
-                        eprintln!("[gst] debug: {}", debug);
+                        logger::debug("gst", format!("debug: {}", debug));
                     }
-                    has_error.store(true, Ordering::SeqCst);
+                    set_state(&state, CaptureState::Failed(err.error().to_string()));
+                    stop_flag.store(true, Ordering::SeqCst);
                     break;
                 }
                 gst::MessageView::Warning(warn) => {
@@ -404,9 +803,9 @@ fn attach_bus_logger(pipeline: &gst::Pipeline, has_error: Arc<AtomicBool>) -> io
                         .src()
                         .map(|s| s.path_string())
                         .unwrap_or_else(|| "unknown".to_string().into());
-                    eprintln!("[gst] warning from {}: {}", src, warn.error());
+                    logger::warn("gst", format!("warning from {}: {}", src, warn.error()));
                     if let Some(debug) = warn.debug() {
-                        eprintln!("[gst] debug: {}", debug);
+                        logger::debug("gst", format!("debug: {}", debug));
                     }
                 }
                 gst::MessageView::StateChanged(state) => {
@@ -415,16 +814,15 @@ fn attach_bus_logger(pipeline: &gst::Pipeline, has_error: Arc<AtomicBool>) -> io
                         .map(|s| s.name() == pipeline_name)
                         .unwrap_or(false)
                     {
-                        eprintln!(
-                            "[gst] pipeline state: {:?} -> {:?}",
-                            state.old(),
-                            state.current()
+                        logger::info(
+                            "gst",
+                            format!("pipeline state: {:?} -> {:?}", state.old(), state.current()),
                         );
                     }
                 }
                 gst::MessageView::Eos(..) => {
-                    eprintln!("[gst] eos");
-                    has_error.store(true, Ordering::SeqCst);
+                    logger::error("gst", "eos");
+                    set_state(&state, CaptureState::Failed("eos".to_string()));
                     break;
                 }
                 _ => {}
@@ -432,7 +830,7 @@ fn attach_bus_logger(pipeline: &gst::Pipeline, has_error: Arc<AtomicBool>) -> io
         }
     });
 
-    Ok(())
+    Ok(handle)
 }
 
 fn monitor_index_from_id(id: &str) -> Option<i32> {

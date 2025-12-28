@@ -2,8 +2,9 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::Serialize;
 
 use crate::{
-    capture_devices::{list_audio_devices, list_video_devices},
+    capture_devices::{list_microphone_devices, list_video_devices},
     encoders::list_video_encoders,
+    logger,
     runtime::restart_capture,
     settings::{UserSettings, save_settings, validate_settings},
     state::SharedState,
@@ -19,9 +20,9 @@ pub async fn update_settings(
     Json(new_settings): Json<UserSettings>,
 ) -> Result<Json<UserSettings>, (StatusCode, Json<ErrorResponse>)> {
     let video_devices = list_video_devices();
-    let audio_devices = list_audio_devices();
+    let microphones = list_microphone_devices();
     let encoders = list_video_encoders().map_err(|err| {
-        eprintln!("[settings] failed to list encoders: {}", err);
+        logger::error("settings", format!("failed to list encoders: {}", err));
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -30,19 +31,16 @@ pub async fn update_settings(
         )
     })?;
 
-    if let Err(message) = validate_settings(&new_settings, &video_devices, &audio_devices, &encoders)
+    if let Err(message) = validate_settings(&new_settings, &video_devices, &microphones, &encoders)
     {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { message }),
-        ));
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { message })));
     }
 
     let mut guard = state.lock().unwrap();
     guard.settings = new_settings.clone();
 
     save_settings(&guard.settings).map_err(|err| {
-        eprintln!("[settings] failed to save: {}", err);
+        logger::error("settings", format!("failed to save: {}", err));
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -52,7 +50,7 @@ pub async fn update_settings(
     })?;
 
     restart_capture(&mut guard).map_err(|err| {
-        eprintln!("[settings] restart failed: {}", err);
+        logger::error("settings", format!("restart failed: {}", err));
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -61,7 +59,7 @@ pub async fn update_settings(
         )
     })?;
 
-    println!("[settings] updated and capture restarted");
+    logger::info("settings", "updated and capture restarted");
 
     Ok(Json(guard.settings.clone()))
 }

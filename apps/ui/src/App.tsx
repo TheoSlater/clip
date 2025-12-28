@@ -2,20 +2,23 @@ import { ToastProvider } from "@heroui/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router";
 import "./globals.css";
+import { useBackendConnection } from "./hooks/useBackendConnection";
 import { Home } from "./views/Home";
-import { Settings } from "./views/Settings";
 
 function App() {
+    useBackendConnection();
+
     return (
         <QueryClientProvider client={new QueryClient()}>
-            <ToastProvider />
+            <div className="bg-background">
+                <ToastProvider />
 
-            <BrowserRouter>
-                <Routes>
-                    <Route path="/" element={<Home />} />
-                    <Route path="/settings" element={<Settings />} />
-                </Routes>
-            </BrowserRouter>
+                <BrowserRouter>
+                    <Routes>
+                        <Route path="/" element={<Home />} />
+                    </Routes>
+                </BrowserRouter>
+            </div>
         </QueryClientProvider>
     );
 }

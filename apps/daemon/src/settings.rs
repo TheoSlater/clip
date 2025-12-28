@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -15,17 +14,18 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSettings {
     pub video_device_id: String,
-    pub audio_device_id: String,
+    #[serde(default = "default_system_audio_enabled")]
+    pub system_audio_enabled: bool,
+    pub mic_device_id: Option<String>,
     pub video_encoder_id: String,
     pub framerate: u32,
     pub bitrate_kbps: u32,
 }
 
 pub fn settings_path() -> io::Result<PathBuf> {
-    let project =
-        ProjectDirs::from("com", "clip", "clip").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "failed to resolve config directory")
-        })?;
+    let project = ProjectDirs::from("com", "clip", "clip").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "failed to resolve config directory")
+    })?;
     Ok(project.config_dir().join("settings.json"))
 }
 
@@ -36,8 +36,8 @@ pub fn load_settings() -> io::Result<Option<UserSettings>> {
     }
 
     let data = fs::read_to_string(&path)?;
-    let settings =
-        serde_json::from_str(&data).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let settings = serde_json::from_str(&data)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     Ok(Some(settings))
 }
 
@@ -53,23 +53,17 @@ pub fn save_settings(settings: &UserSettings) -> io::Result<()> {
 
 pub fn default_settings(
     video_devices: &[VideoDevice],
-    audio_devices: &[AudioDevice],
     encoders: &[VideoEncoderDescriptor],
 ) -> io::Result<UserSettings> {
-    let default_video = prefer_screen_device(video_devices).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "no video devices available")
-    })?;
-    let default_encoder = prefer_hardware_encoder(encoders).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "no video encoders available")
-    })?;
-
-    let default_audio = audio_devices.first().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "no audio devices available")
-    })?;
+    let default_video = prefer_screen_device(video_devices)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no video devices available"))?;
+    let default_encoder = prefer_hardware_encoder(encoders)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no video encoders available"))?;
 
     Ok(UserSettings {
         video_device_id: default_video.id.clone(),
-        audio_device_id: default_audio.id.clone(),
+        system_audio_enabled: true,
+        mic_device_id: None,
         video_encoder_id: default_encoder.id.clone(),
         framerate: 60,
         bitrate_kbps: 20_000,
@@ -79,25 +73,28 @@ pub fn default_settings(
 pub fn apply_startup_fallbacks(
     mut settings: UserSettings,
     video_devices: &[VideoDevice],
-    audio_devices: &[AudioDevice],
+    microphones: &[AudioDevice],
     encoders: &[VideoEncoderDescriptor],
 ) -> (UserSettings, Vec<String>) {
     let mut changes = Vec::new();
 
-    if !video_devices.iter().any(|d| d.id == settings.video_device_id) {
+    if !video_devices
+        .iter()
+        .any(|d| d.id == settings.video_device_id)
+    {
         if let Some(default_video) = prefer_screen_device(video_devices) {
             settings.video_device_id = default_video.id.clone();
             changes.push("video device reset to default".to_string());
         }
     }
 
-    if !audio_devices
-        .iter()
-        .any(|d| d.id == settings.audio_device_id)
-    {
-        if let Some(default_audio) = audio_devices.first() {
-            settings.audio_device_id = default_audio.id.clone();
-            changes.push("audio device reset to default".to_string());
+    if let Some(mic_id) = settings.mic_device_id.clone() {
+        if mic_id.is_empty() {
+            settings.mic_device_id = None;
+            changes.push("microphone disabled (empty selection)".to_string());
+        } else if !microphones.iter().any(|d| d.id == mic_id && d.is_input) {
+            settings.mic_device_id = None;
+            changes.push("microphone disabled (device missing)".to_string());
         }
     }
 
@@ -124,18 +121,24 @@ pub fn apply_startup_fallbacks(
 pub fn validate_settings(
     settings: &UserSettings,
     video_devices: &[VideoDevice],
-    audio_devices: &[AudioDevice],
+    microphones: &[AudioDevice],
     encoders: &[VideoEncoderDescriptor],
 ) -> Result<(), String> {
-    if !video_devices.iter().any(|d| d.id == settings.video_device_id) {
+    if !video_devices
+        .iter()
+        .any(|d| d.id == settings.video_device_id)
+    {
         return Err("selected video device is not available".to_string());
     }
 
-    if !audio_devices
-        .iter()
-        .any(|d| d.id == settings.audio_device_id)
-    {
-        return Err("selected audio device is not available".to_string());
+    if let Some(mic_id) = &settings.mic_device_id {
+        if mic_id.is_empty() {
+            return Err("microphone selection is empty".to_string());
+        }
+
+        if !microphones.iter().any(|d| &d.id == mic_id && d.is_input) {
+            return Err("selected microphone device is not available".to_string());
+        }
     }
 
     if !encoders.iter().any(|e| e.id == settings.video_encoder_id) {
@@ -174,4 +177,8 @@ fn prefer_screen_device<'a>(devices: &'a [VideoDevice]) -> Option<&'a VideoDevic
         .iter()
         .find(|device| matches!(device.kind, VideoDeviceKind::Screen))
         .or_else(|| devices.first())
+}
+
+fn default_system_audio_enabled() -> bool {
+    true
 }

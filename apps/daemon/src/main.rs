@@ -2,6 +2,7 @@ mod capture_devices;
 mod capture_monitor;
 mod encoders;
 mod gst_capture;
+mod logger;
 mod ring_buffer;
 mod routes;
 mod runtime;
@@ -18,9 +19,10 @@ use std::{
 use tokio::{net::TcpListener, sync::oneshot};
 
 use crate::{
-    capture_devices::{list_audio_devices, list_video_devices},
+    capture_devices::{list_microphone_devices, list_video_devices},
     capture_monitor::spawn_capture_monitor,
     encoders::list_video_encoders,
+    logger::init_logging,
     ring_buffer::RingBuffer,
     routes::build_router,
     runtime::restart_capture,
@@ -29,6 +31,7 @@ use crate::{
 
 #[tokio::main]
 async fn main() {
+    init_logging();
     // --- shutdown signal ---
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -37,29 +40,28 @@ async fn main() {
 
     // --- shared daemon state ---
     let video_devices = list_video_devices();
-    let audio_devices = list_audio_devices();
+    let microphones = list_microphone_devices();
     let encoders = list_video_encoders().expect("failed to enumerate video encoders");
 
     let loaded_settings = load_settings().expect("failed to load settings");
     let mut settings = match loaded_settings.as_ref() {
         Some(loaded) => {
-            println!("[settings] loaded from disk");
+            logger::info("settings", "loaded from disk");
             loaded.clone()
         }
         None => {
-            let defaults =
-                default_settings(&video_devices, &audio_devices, &encoders)
-                    .expect("failed to build default settings");
-            println!("[settings] created defaults");
+            let defaults = default_settings(&video_devices, &encoders)
+                .expect("failed to build default settings");
+            logger::info("settings", "created defaults");
             defaults
         }
     };
 
     let (validated, changes) =
-        apply_startup_fallbacks(settings.clone(), &video_devices, &audio_devices, &encoders);
+        apply_startup_fallbacks(settings.clone(), &video_devices, &microphones, &encoders);
     if !changes.is_empty() {
         for change in &changes {
-            println!("[settings] {}", change);
+            logger::info("settings", format!("{}", change));
         }
         settings = validated;
         save_settings(&settings).expect("failed to save settings");
@@ -89,7 +91,7 @@ async fn main() {
     let app: Router = build_router(state);
 
     let addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 43123));
-    println!("daemon listening on {}", addr);
+    logger::info("system", format!("daemon listening on {}", addr));
 
     let listener: TcpListener = TcpListener::bind(addr)
         .await
@@ -98,7 +100,7 @@ async fn main() {
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             shutdown_rx.await.ok();
-            println!("shutting down daemon");
+            logger::info("system", "shutting down daemon");
         })
         .await
         .expect("server error");
