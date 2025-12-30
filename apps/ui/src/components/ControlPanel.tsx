@@ -1,4 +1,5 @@
 import { Button, Divider } from "@heroui/react";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { useBackendConnectionStore } from "../state/backendConnection";
 
@@ -19,8 +20,9 @@ export const ControlPanel = () => {
     }
 
     async function handlePressListClips() {
-        const response = await fetch("http://localhost:43123/clips");
-        setTextRes(await response.text());
+        openPath(
+            "C:\\Users\\ohmsl\\Documents\\Code\\clip\\apps\\daemon\\clips",
+        );
     }
 
     async function handlePressShutdown() {

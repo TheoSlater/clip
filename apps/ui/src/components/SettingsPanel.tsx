@@ -73,6 +73,7 @@ export const SettingsPanel = () => {
                 addToast({
                     title: "Settings updated",
                     severity: "success",
+                    color: "success",
                 });
             },
         });

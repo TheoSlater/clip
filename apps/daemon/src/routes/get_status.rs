@@ -1,9 +1,9 @@
 use axum::{Json, extract::State};
 
-use crate::{settings::UserSettings, state::SharedState};
+use crate::{logger, settings::UserSettings, state::SharedState};
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct StatusResponse {
     pub settings: UserSettings,
     pub buffering: bool,
@@ -14,10 +14,14 @@ pub struct StatusResponse {
 pub async fn get_status(State(state): State<SharedState>) -> Json<StatusResponse> {
     let guard = state.lock().unwrap();
 
-    Json(StatusResponse {
+    let status = StatusResponse {
         settings: guard.settings.clone(),
         buffering: guard.buffering,
         buffer_seconds: guard.buffer_seconds,
         ring_buffer_packets: guard.ring_buffer.lock().unwrap().len(),
-    })
+    };
+
+    logger::info("status", format!("Status response: {:?}", status));
+
+    Json(status)
 }

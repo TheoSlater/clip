@@ -133,8 +133,7 @@ impl GstCapture {
         let audio_src = if system_audio_enabled {
             let src = make_element("wasapisrc")?;
             set_bool_property(&src, "loopback", true);
-            set_bool_property(&src, "do-timestamp", true);
-            set_bool_property(&src, "provide-clock", true);
+            set_bool_property(&src, "provide-clock", false);
             set_bool_property(&src, "low-latency", false);
             Some(src)
         } else {
@@ -151,33 +150,35 @@ impl GstCapture {
         } else {
             None
         };
-        let audiorate = if system_audio_enabled {
-            Some(make_element("audiorate")?)
-        } else {
-            None
-        };
+
         let audio_capsfilter = if system_audio_enabled {
             Some(make_element("capsfilter")?)
         } else {
             None
         };
+
         if let (Some(filter), Some(caps)) = (audio_capsfilter.as_ref(), audio_caps.as_ref()) {
             filter.set_property("caps", caps);
         }
 
         let audio_mixer = if mix_audio {
-            Some(make_element("audiomixer")?)
+            let mixer = make_element("audiomixer")?;
+            set_bool_property(&mixer, "ignore-inactive-pads", true);
+            set_bool_property(&mixer, "sync", false);
+            Some(mixer)
         } else {
             None
         };
 
-        let system_queue = if mix_audio { Some(make_queue()?) } else { None };
+        let system_queue = if mix_audio {
+            Some(make_audio_queue()?)
+        } else {
+            None
+        };
 
         let mic_src = if mic_enabled {
             let mic = make_element("wasapisrc")?;
             set_bool_property(&mic, "loopback", false);
-            set_bool_property(&mic, "do-timestamp", true);
-            set_bool_property(&mic, "provide-clock", false);
             set_bool_property(&mic, "low-latency", false);
             if let Some(mic_id) = mic_device {
                 set_str_property(&mic, "device", mic_id);
@@ -195,18 +196,17 @@ impl GstCapture {
             .as_ref()
             .map(|_| make_element("audioresample"))
             .transpose()?;
-        let mic_rate = mic_src
-            .as_ref()
-            .map(|_| make_element("audiorate"))
-            .transpose()?;
+
         let mic_capsfilter = mic_src
             .as_ref()
             .map(|_| make_element("capsfilter"))
             .transpose()?;
+
         if let (Some(filter), Some(caps)) = (mic_capsfilter.as_ref(), audio_caps.as_ref()) {
             filter.set_property("caps", caps);
         }
-        let mic_queue = mic_src.as_ref().map(|_| make_queue()).transpose()?;
+
+        let mic_queue = mic_src.as_ref().map(|_| make_audio_queue()).transpose()?;
 
         let audio_encoder = if has_audio {
             Some(make_audio_encoder()?)
@@ -221,7 +221,11 @@ impl GstCapture {
         } else {
             None
         };
-        let audio_queue = if has_audio { Some(make_queue()?) } else { None };
+        let audio_queue = if has_audio {
+            Some(make_audio_queue()?)
+        } else {
+            None
+        };
 
         let mux = make_element("mpegtsmux")?;
         set_bool_property(&mux, "streamable", true);
@@ -279,9 +283,6 @@ impl GstCapture {
         if let Some(element) = audioresample.as_ref() {
             elements.push(element);
         }
-        if let Some(element) = audiorate.as_ref() {
-            elements.push(element);
-        }
         if let Some(element) = audio_capsfilter.as_ref() {
             elements.push(element);
         }
@@ -298,9 +299,6 @@ impl GstCapture {
             elements.push(element);
         }
         if let Some(element) = mic_resample.as_ref() {
-            elements.push(element);
-        }
-        if let Some(element) = mic_rate.as_ref() {
             elements.push(element);
         }
         if let Some(element) = mic_capsfilter.as_ref() {
@@ -355,7 +353,6 @@ impl GstCapture {
                     Some(audio_src),
                     Some(audioconvert),
                     Some(audioresample),
-                    Some(audiorate),
                     Some(audio_capsfilter),
                     Some(system_queue),
                     Some(audio_mixer),
@@ -363,7 +360,6 @@ impl GstCapture {
                     audio_src.as_ref(),
                     audioconvert.as_ref(),
                     audioresample.as_ref(),
-                    audiorate.as_ref(),
                     audio_capsfilter.as_ref(),
                     system_queue.as_ref(),
                     audio_mixer.as_ref(),
@@ -372,7 +368,6 @@ impl GstCapture {
                         audio_src,
                         audioconvert,
                         audioresample,
-                        audiorate,
                         audio_capsfilter,
                         system_queue,
                     ])
@@ -387,7 +382,6 @@ impl GstCapture {
                     Some(mic),
                     Some(mic_convert),
                     Some(mic_resample),
-                    Some(mic_rate),
                     Some(mic_caps),
                     Some(mic_queue),
                     Some(audio_mixer),
@@ -395,22 +389,14 @@ impl GstCapture {
                     mic_src.as_ref(),
                     mic_convert.as_ref(),
                     mic_resample.as_ref(),
-                    mic_rate.as_ref(),
                     mic_capsfilter.as_ref(),
                     mic_queue.as_ref(),
                     audio_mixer.as_ref(),
                 ) {
-                    gst::Element::link_many(&[
-                        mic,
-                        mic_convert,
-                        mic_resample,
-                        mic_rate,
-                        mic_caps,
-                        mic_queue,
-                    ])
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::Other, "failed to link mic chain")
-                    })?;
+                    gst::Element::link_many(&[mic, mic_convert, mic_resample, mic_caps, mic_queue])
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::Other, "failed to link mic chain")
+                        })?;
 
                     link_queue_to_mixer(mic_queue, audio_mixer, "mic")?;
                 }
@@ -431,7 +417,6 @@ impl GstCapture {
                     Some(audio_src),
                     Some(audioconvert),
                     Some(audioresample),
-                    Some(audiorate),
                     Some(audio_capsfilter),
                     Some(audio_encoder),
                     Some(aacparse),
@@ -440,7 +425,6 @@ impl GstCapture {
                     audio_src.as_ref(),
                     audioconvert.as_ref(),
                     audioresample.as_ref(),
-                    audiorate.as_ref(),
                     audio_capsfilter.as_ref(),
                     audio_encoder.as_ref(),
                     aacparse.as_ref(),
@@ -450,7 +434,6 @@ impl GstCapture {
                         audio_src,
                         audioconvert,
                         audioresample,
-                        audiorate,
                         audio_capsfilter,
                         audio_encoder,
                         aacparse,
@@ -465,7 +448,6 @@ impl GstCapture {
                     Some(mic),
                     Some(mic_convert),
                     Some(mic_resample),
-                    Some(mic_rate),
                     Some(mic_caps),
                     Some(audio_encoder),
                     Some(aacparse),
@@ -474,7 +456,6 @@ impl GstCapture {
                     mic_src.as_ref(),
                     mic_convert.as_ref(),
                     mic_resample.as_ref(),
-                    mic_rate.as_ref(),
                     mic_capsfilter.as_ref(),
                     audio_encoder.as_ref(),
                     aacparse.as_ref(),
@@ -484,7 +465,6 @@ impl GstCapture {
                         mic,
                         mic_convert,
                         mic_resample,
-                        mic_rate,
                         mic_caps,
                         audio_encoder,
                         aacparse,
@@ -514,21 +494,21 @@ impl GstCapture {
 
         let probe_id = h264parse_src
             .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-            if guard.load(Ordering::SeqCst) {
-                return gst::PadProbeReturn::Remove;
-            }
+                if guard.load(Ordering::SeqCst) {
+                    return gst::PadProbeReturn::Remove;
+                }
 
-            if let Some(buffer) = info.buffer() {
-                if !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
-                    if let Some(pts) = buffer.dts_or_pts() {
-                        let mut guard = keyframe_ring_buffer.lock().unwrap();
-                        guard.push_keyframe_pts(pts.mseconds());
+                if let Some(buffer) = info.buffer() {
+                    if !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
+                        if let Some(pts) = buffer.dts_or_pts() {
+                            let mut guard = keyframe_ring_buffer.lock().unwrap();
+                            guard.push_keyframe_pts(pts.mseconds());
+                        }
                     }
                 }
-            }
 
-            gst::PadProbeReturn::Ok
-        })
+                gst::PadProbeReturn::Ok
+            })
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to attach probe"))?;
 
         let started_at = Instant::now();
@@ -639,10 +619,13 @@ impl GstCapture {
         // 2) Stop bus thread
         self.stop_flag.store(true, Ordering::SeqCst);
 
-        // 3) Stop pipeline
+        // 3) Give encoders a chance to flush and close cleanly
+        let _ = self.pipeline.send_event(gst::event::Eos::new());
+
+        // 4) Stop pipeline
         let _ = self.pipeline.set_state(gst::State::Null);
 
-        // 4) Join bus thread
+        // 5) Join bus thread
         if let Some(handle) = self.bus_thread.take() {
             let _ = handle.join();
         }
@@ -708,6 +691,14 @@ fn make_queue() -> io::Result<gst::Element> {
     set_u32_property(&queue, "max-size-buffers", 0);
     set_u32_property(&queue, "max-size-bytes", 0);
     set_u64_property(&queue, "max-size-time", 1_000_000_000);
+    Ok(queue)
+}
+
+fn make_audio_queue() -> io::Result<gst::Element> {
+    let queue = make_element("queue")?;
+    set_u32_property(&queue, "max-size-time", 500_000_000);
+    set_str_property(&queue, "leaky", "downstream");
+    set_bool_property(&queue, "sync", false);
     Ok(queue)
 }
 

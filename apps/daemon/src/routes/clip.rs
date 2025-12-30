@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{ring_buffer::Packet, state::SharedState};
+use crate::{logger, ring_buffer::Packet, state::SharedState};
 
 #[derive(serde::Serialize)]
 pub struct ClipResponse {
@@ -51,6 +51,8 @@ pub async fn clip(State(state): State<SharedState>) -> Result<Json<ClipResponse>
         (Some(first), Some(last)) => last.pts_ms.saturating_sub(first.pts_ms),
         _ => 0,
     };
+
+    logger::info("capture", format!("Clip saved to {}", path.display()));
 
     Ok(Json(ClipResponse {
         filename,
