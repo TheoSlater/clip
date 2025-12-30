@@ -2,12 +2,15 @@ mod capture_devices;
 mod capture_monitor;
 mod encoders;
 mod gst_capture;
+mod gst_utils;
 mod logger;
 mod ring_buffer;
 mod routes;
 mod runtime;
 mod settings;
 mod state;
+mod video;
+mod audio;
 
 use axum::Router;
 
