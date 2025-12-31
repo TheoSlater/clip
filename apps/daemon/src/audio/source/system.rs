@@ -14,7 +14,7 @@ impl SystemAudioSource {
         Ok(Self)
     }
 
-    pub fn build(&self, pipeline: &gst::Pipeline) -> io::Result<AudioSourceOutput> {
+    pub fn build(&self, pipeline: &gst::Pipeline, volume_value: f32) -> io::Result<AudioSourceOutput> {
         let src = gst::ElementFactory::make("wasapisrc")
             .build()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing wasapisrc"))?;
@@ -35,6 +35,12 @@ impl SystemAudioSource {
             .build()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing audioconvert"))?;
 
+        let volume = gst::ElementFactory::make("volume")
+            .build()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing volume element"))?;
+        let volume_value = volume_value as f64;
+        volume.set_property("volume", &volume_value);
+
         let capsfilter = gst::ElementFactory::make("capsfilter")
             .build()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing capsfilter"))?;
@@ -46,14 +52,15 @@ impl SystemAudioSource {
         capsfilter.set_property("caps", &caps);
 
         pipeline
-            .add_many(&[&src, &queue, &convert, &capsfilter])
+            .add_many(&[&src, &convert, &volume, &queue, &capsfilter])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to add elements"))?;
 
-        gst::Element::link_many(&[&src, &queue, &convert, &capsfilter])
+        gst::Element::link_many(&[&src, &convert, &volume, &queue, &capsfilter])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link elements"))?;
 
         Ok(AudioSourceOutput {
             element: capsfilter,
+            volume: Some(volume),
         })
     }
 }

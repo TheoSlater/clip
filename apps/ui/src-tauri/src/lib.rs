@@ -7,19 +7,23 @@ use std::{
 
 use chrono::Local;
 use clip_service::{
+    audio::AudioSourceId,
     capture_devices::{
-        AudioDevice, VideoDevice, list_microphone_devices as list_microphone_devices_inner,
-        list_video_devices as list_video_devices_inner,
+        list_microphone_devices as list_microphone_devices_inner,
+        list_video_devices as list_video_devices_inner, AudioDevice, VideoDevice,
     },
-    encoders::{VideoEncoderDescriptor, list_video_encoders as list_video_encoders_inner},
+    encoders::{list_video_encoders as list_video_encoders_inner, VideoEncoderDescriptor},
     gst_capture::GstCapture,
     logger,
     ring_buffer::{Packet, RingBuffer},
     settings::{
-        UserSettings, apply_startup_fallbacks, default_settings, load_settings, save_settings,
-        validate_settings,
+        apply_startup_fallbacks, default_settings, load_settings, save_settings, validate_settings,
+        UserSettings,
     },
 };
+
+use gst::prelude::*;
+use gstreamer as gst;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -74,10 +78,22 @@ fn should_restart_capture(a: &UserSettings, b: &UserSettings) -> bool {
         || a.bitrate_kbps != b.bitrate_kbps
 }
 
-fn replace_capture(
-    state: &State<'_, Mutex<CaptureRuntime>>,
-    new_capture: Option<GstCapture>,
+fn apply_volume_elements(
+    system_volume: Option<gst::Element>,
+    mic_volume: Option<gst::Element>,
+    settings: &UserSettings,
 ) {
+    if let Some(element) = system_volume {
+        let value = settings.system_audio_volume as f64;
+        element.set_property("volume", &value);
+    }
+    if let Some(element) = mic_volume {
+        let value = settings.mic_volume as f64;
+        element.set_property("volume", &value);
+    }
+}
+
+fn replace_capture(state: &State<'_, Mutex<CaptureRuntime>>, new_capture: Option<GstCapture>) {
     let mut guard = state.lock().unwrap();
     guard.capture = new_capture;
 }
@@ -94,8 +110,8 @@ fn resolve_settings() -> Result<UserSettings, String> {
             loaded.clone()
         }
         None => {
-            let defaults = default_settings(&video_devices, &encoders)
-                .map_err(|err| err.to_string())?;
+            let defaults =
+                default_settings(&video_devices, &encoders).map_err(|err| err.to_string())?;
             logger::info("settings", "created defaults");
             defaults
         }
@@ -193,12 +209,34 @@ fn update_settings(
         return Err(message);
     }
 
-    let (old_capture, should_restart, saved_settings) = {
+    let (old_capture, should_restart, saved_settings, volume_targets, volume_changed) = {
         let mut guard = state.lock().unwrap();
         let restart = should_restart_capture(&guard.settings, &new_settings);
+        let volume_changed = guard.settings.system_audio_volume != new_settings.system_audio_volume
+            || guard.settings.mic_volume != new_settings.mic_volume;
+        let volume_targets = if !restart {
+            guard
+                .capture
+                .as_ref()
+                .map(|capture| {
+                    (
+                        capture.volume_element(AudioSourceId::System),
+                        capture.volume_element(AudioSourceId::Mic),
+                    )
+                })
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
         guard.settings = new_settings.clone();
         let captured = if restart { guard.capture.take() } else { None };
-        (captured, restart, guard.settings.clone())
+        (
+            captured,
+            restart,
+            guard.settings.clone(),
+            volume_targets,
+            volume_changed,
+        )
     };
 
     save_settings(&saved_settings).map_err(|err| {
@@ -226,6 +264,8 @@ fn update_settings(
             message
         })?;
         replace_capture(&state, Some(new_capture));
+    } else if volume_changed {
+        apply_volume_elements(volume_targets.0, volume_targets.1, &saved_settings);
     }
 
     logger::info("settings", "updated and capture restarted");
@@ -235,10 +275,7 @@ fn update_settings(
 }
 
 #[tauri::command]
-fn start_capture(
-    app: AppHandle,
-    state: State<'_, Mutex<CaptureRuntime>>,
-) -> Result<(), String> {
+fn start_capture(app: AppHandle, state: State<'_, Mutex<CaptureRuntime>>) -> Result<(), String> {
     let (settings, ring_buffer, has_capture) = {
         let guard = state.lock().unwrap();
         (
@@ -269,10 +306,7 @@ fn start_capture(
 }
 
 #[tauri::command]
-fn stop_capture(
-    app: AppHandle,
-    state: State<'_, Mutex<CaptureRuntime>>,
-) -> Result<(), String> {
+fn stop_capture(app: AppHandle, state: State<'_, Mutex<CaptureRuntime>>) -> Result<(), String> {
     let old_capture = {
         let mut guard = state.lock().unwrap();
         guard.capture.take()
@@ -286,10 +320,7 @@ fn stop_capture(
 }
 
 #[tauri::command]
-fn restart_capture(
-    app: AppHandle,
-    state: State<'_, Mutex<CaptureRuntime>>,
-) -> Result<(), String> {
+fn restart_capture(app: AppHandle, state: State<'_, Mutex<CaptureRuntime>>) -> Result<(), String> {
     let (old_capture, settings, ring_buffer) = {
         let mut guard = state.lock().unwrap();
         (
@@ -317,6 +348,33 @@ fn restart_capture(
     replace_capture(&state, Some(capture));
     emit_capture_status(&app, "running", None);
     Ok(())
+}
+
+#[tauri::command]
+fn set_audio_volume(
+    state: State<'_, Mutex<CaptureRuntime>>,
+    source: AudioSourceId,
+    value: f32,
+) -> Result<(), String> {
+    if !(0.0..=2.0).contains(&value) {
+        return Err("volume must be between 0.0 and 2.0".to_string());
+    }
+
+    let target = {
+        let guard = state.lock().unwrap();
+        guard
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.volume_element(source))
+    };
+
+    if let Some(element) = target {
+        let value = value as f64;
+        element.set_property("volume", &value);
+        Ok(())
+    } else {
+        Err("volume control not available".to_string())
+    }
 }
 
 #[tauri::command]
@@ -446,6 +504,7 @@ pub fn run() {
             start_capture,
             stop_capture,
             restart_capture,
+            set_audio_volume,
             clip,
             list_clips,
             get_clips_dir

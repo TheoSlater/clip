@@ -16,7 +16,11 @@ pub struct UserSettings {
     pub video_device_id: String,
     #[serde(default = "default_system_audio_enabled")]
     pub system_audio_enabled: bool,
+    #[serde(default = "default_system_audio_volume")]
+    pub system_audio_volume: f32,
     pub mic_device_id: Option<String>,
+    #[serde(default = "default_mic_volume")]
+    pub mic_volume: f32,
     pub video_encoder_id: String,
     pub framerate: u32,
     pub bitrate_kbps: u32,
@@ -63,7 +67,9 @@ pub fn default_settings(
     Ok(UserSettings {
         video_device_id: default_video.id.clone(),
         system_audio_enabled: true,
+        system_audio_volume: default_system_audio_volume(),
         mic_device_id: None,
+        mic_volume: default_mic_volume(),
         video_encoder_id: default_encoder.id.clone(),
         framerate: 60,
         bitrate_kbps: 20_000,
@@ -115,6 +121,16 @@ pub fn apply_startup_fallbacks(
         changes.push("bitrate reset to 20000 kbps".to_string());
     }
 
+    if !(0.0..=2.0).contains(&settings.system_audio_volume) {
+        settings.system_audio_volume = default_system_audio_volume();
+        changes.push("system audio volume reset to 1.0".to_string());
+    }
+
+    if !(0.0..=2.0).contains(&settings.mic_volume) {
+        settings.mic_volume = default_mic_volume();
+        changes.push("mic volume reset to 1.0".to_string());
+    }
+
     (settings, changes)
 }
 
@@ -153,6 +169,14 @@ pub fn validate_settings(
         return Err("bitrate must be greater than zero".to_string());
     }
 
+    if !(0.0..=2.0).contains(&settings.system_audio_volume) {
+        return Err("system audio volume must be between 0.0 and 2.0".to_string());
+    }
+
+    if !(0.0..=2.0).contains(&settings.mic_volume) {
+        return Err("mic volume must be between 0.0 and 2.0".to_string());
+    }
+
     Ok(())
 }
 
@@ -181,4 +205,12 @@ fn prefer_screen_device<'a>(devices: &'a [VideoDevice]) -> Option<&'a VideoDevic
 
 fn default_system_audio_enabled() -> bool {
     true
+}
+
+fn default_system_audio_volume() -> f32 {
+    1.0
+}
+
+fn default_mic_volume() -> f32 {
+    1.0
 }

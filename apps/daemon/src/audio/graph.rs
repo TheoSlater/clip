@@ -8,12 +8,18 @@ use crate::{
     settings::UserSettings,
 };
 
+pub struct AudioVolumes {
+    pub system: Option<gst::Element>,
+    pub mic: Option<gst::Element>,
+}
+
 pub struct GraphOutput {
     pub element: gst::Element,
 }
 
 pub struct AudioGraph {
     pub output: GraphOutput,
+    pub volumes: AudioVolumes,
 }
 
 impl AudioGraph {
@@ -25,8 +31,23 @@ impl AudioGraph {
         }
 
         let mut built_sources = Vec::new();
+        let mut volumes = AudioVolumes {
+            system: None,
+            mic: None,
+        };
         for source in sources {
-            built_sources.push(source.build(pipeline)?);
+            match source {
+                AudioSource::System(s) => {
+                    let built = s.build(pipeline, config.system_audio_volume)?;
+                    volumes.system = built.volume.clone();
+                    built_sources.push(built);
+                }
+                AudioSource::Mic(s) => {
+                    let built = s.build(pipeline, config.mic_volume)?;
+                    volumes.mic = built.volume.clone();
+                    built_sources.push(built);
+                }
+            }
         }
 
         let mixed = if built_sources.len() == 1 {
@@ -67,11 +88,15 @@ impl AudioGraph {
 
         let post_mix = super::source::AudioSourceOutput {
             element: capsfilter,
+            volume: None,
         };
 
         let encoder = AudioEncoder::from_settings(config)?;
         let encoded = encoder.build(pipeline, post_mix)?;
 
-        Ok(Some(Self { output: encoded }))
+        Ok(Some(Self {
+            output: encoded,
+            volumes,
+        }))
     }
 }

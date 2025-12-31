@@ -4,3 +4,4 @@ pub mod mixer;
 pub mod source;
 
 pub use graph::AudioGraph;
+pub use source::AudioSourceId;

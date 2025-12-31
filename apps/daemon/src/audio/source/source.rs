@@ -4,6 +4,8 @@ use gstreamer as gst;
 
 use crate::settings::UserSettings;
 
+use serde::{Deserialize, Serialize};
+
 use super::{mic::MicAudioSource, system::SystemAudioSource};
 
 pub enum AudioSource {
@@ -11,8 +13,16 @@ pub enum AudioSource {
     Mic(MicAudioSource),
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioSourceId {
+    System,
+    Mic,
+}
+
 pub struct AudioSourceOutput {
     pub element: gst::Element,
+    pub volume: Option<gst::Element>,
 }
 
 // Audio sources should do the following:
@@ -37,10 +47,10 @@ impl AudioSource {
         Ok(sources)
     }
 
-    pub fn build(self, pipeline: &gst::Pipeline) -> io::Result<AudioSourceOutput> {
+    pub fn build(self, pipeline: &gst::Pipeline, volume: f32) -> io::Result<AudioSourceOutput> {
         match self {
-            AudioSource::System(s) => s.build(pipeline),
-            AudioSource::Mic(s) => s.build(pipeline),
+            AudioSource::System(s) => s.build(pipeline, volume),
+            AudioSource::Mic(s) => s.build(pipeline, volume),
         }
     }
 }

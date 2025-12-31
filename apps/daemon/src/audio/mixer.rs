@@ -57,6 +57,9 @@ impl AudioMixer {
                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link into mixer"))?;
         }
 
-        Ok(AudioSourceOutput { element: mixer })
+        Ok(AudioSourceOutput {
+            element: mixer,
+            volume: None,
+        })
     }
 }

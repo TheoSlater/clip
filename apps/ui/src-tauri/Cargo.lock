@@ -4365,6 +4365,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clip-service",
+ "gstreamer",
  "serde",
  "serde_json",
  "tauri",

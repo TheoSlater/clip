@@ -166,6 +166,46 @@ export const SettingsPanel = () => {
                         )}
                     </Select>
                 </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <Slider
+                        label="System volume"
+                        minValue={0}
+                        maxValue={2}
+                        step={0.05}
+                        value={form?.system_audio_volume ?? 1}
+                        onChange={(value) => {
+                            const parsed = Number(value);
+                            if (!Number.isNaN(parsed)) {
+                                updateForm("system_audio_volume", parsed);
+                            }
+                        }}
+                        isDisabled={
+                            !form ||
+                            !form.system_audio_enabled ||
+                            connectionStatus !== "connected"
+                        }
+                    />
+
+                    <Slider
+                        label="Mic volume"
+                        minValue={0}
+                        maxValue={2}
+                        step={0.05}
+                        value={form?.mic_volume ?? 1}
+                        onChange={(value) => {
+                            const parsed = Number(value);
+                            if (!Number.isNaN(parsed)) {
+                                updateForm("mic_volume", parsed);
+                            }
+                        }}
+                        isDisabled={
+                            !form ||
+                            !form.mic_device_id ||
+                            connectionStatus !== "connected"
+                        }
+                    />
+                </div>
             </SectionTitle>
 
             <SectionTitle title="Encoder Settings" Icon={BinaryIcon}>

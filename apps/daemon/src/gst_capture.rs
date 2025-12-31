@@ -12,7 +12,7 @@ use gstreamer_app as gst_app;
 
 use crossbeam_channel::Sender;
 
-use crate::audio::AudioGraph;
+use crate::audio::{AudioGraph, AudioSourceId};
 use crate::video::VideoGraph;
 
 use crate::{
@@ -50,6 +50,10 @@ pub struct GstCapture {
 
     // packet pipeline
     packet_tx: Sender<Packet>,
+
+    // audio controls
+    system_volume: Option<gst::Element>,
+    mic_volume: Option<gst::Element>,
 }
 
 impl GstCapture {
@@ -75,6 +79,11 @@ impl GstCapture {
         let audio = AudioGraph::build(&pipeline, config)?;
 
         link_queue_to_mux(&video.output.element, &mux, "video")?;
+
+        let (system_volume, mic_volume) = match audio.as_ref() {
+            Some(graph) => (graph.volumes.system.clone(), graph.volumes.mic.clone()),
+            None => (None, None),
+        };
 
         if let Some(audio) = audio {
             if let Some(src_pad) = audio.output.element.static_pad("src") {
@@ -183,6 +192,9 @@ impl GstCapture {
             worker_thread: Some(worker_thread),
 
             packet_tx,
+
+            system_volume,
+            mic_volume,
         })
     }
 
@@ -196,6 +208,22 @@ impl GstCapture {
 
     pub fn stop(&mut self) {
         self.stop_inner();
+    }
+
+    pub fn volume_element(&self, source: AudioSourceId) -> Option<gst::Element> {
+        match source {
+            AudioSourceId::System => self.system_volume.clone(),
+            AudioSourceId::Mic => self.mic_volume.clone(),
+        }
+    }
+
+    pub fn set_volume(&self, source: AudioSourceId, value: f32) -> bool {
+        if let Some(element) = self.volume_element(source) {
+            let value = value as f64;
+            element.set_property("volume", &value);
+            return true;
+        }
+        false
     }
 
     fn stop_inner(&mut self) {
