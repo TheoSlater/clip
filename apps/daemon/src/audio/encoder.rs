@@ -37,23 +37,18 @@ impl AudioEncoder {
 
         capsfilter.set_property("caps", &caps);
 
-        let queue = gst::ElementFactory::make("queue")
-            .build()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing queue element"))?;
-
-        queue.set_property("max-size-time", &500_000_000u64);
-        queue.set_property_from_str("leaky", "downstream");
-
         pipeline
-            .add_many(&[&encoder, &parser, &capsfilter, &queue])
+            .add_many(&[&encoder, &parser, &capsfilter])
             .map_err(|_| {
                 io::Error::new(io::ErrorKind::Other, "failed to add elements to pipeline")
             })?;
 
-        gst::Element::link_many(&[&input.element, &encoder, &parser, &capsfilter, &queue])
+        gst::Element::link_many(&[&input.element, &encoder, &parser, &capsfilter])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link elements"))?;
 
-        Ok(GraphOutput { element: queue })
+        Ok(GraphOutput {
+            element: capsfilter,
+        })
     }
 }
 

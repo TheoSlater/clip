@@ -2,7 +2,7 @@ use std::io;
 
 use gstreamer as gst;
 
-use crate::{audio::mixer::AudioMixer, settings::UserSettings};
+use crate::settings::UserSettings;
 
 use super::{mic::MicAudioSource, system::SystemAudioSource};
 
@@ -15,6 +15,11 @@ pub struct AudioSourceOutput {
     pub element: gst::Element,
 }
 
+// Audio sources should do the following:
+// - Capture
+// - Convert format
+// - Ensure channel layout
+// They should not do any resampling, or make any timing related decisions
 impl AudioSource {
     pub fn from_settings(config: &UserSettings) -> io::Result<Vec<Self>> {
         let mut sources = Vec::new();

@@ -20,15 +20,21 @@ impl SystemAudioSource {
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing wasapisrc"))?;
 
         src.set_property("loopback", &true);
-        src.set_property("provide-clock", &false);
+        src.set_property("provide-clock", &true);
         src.set_property("low-latency", &false);
+        src.set_property("do-timestamp", &true);
+
+        let queue = gst::ElementFactory::make("queue")
+            .build()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing queue element"))?;
+
+        queue.set_property("max-size-time", &100_000_000u64);
+        queue.set_property_from_str("leaky", "downstream");
 
         let convert = gst::ElementFactory::make("audioconvert")
             .build()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing audioconvert"))?;
-        let resample = gst::ElementFactory::make("audioresample")
-            .build()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing audioresample"))?;
+
         let capsfilter = gst::ElementFactory::make("capsfilter")
             .build()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing capsfilter"))?;
@@ -40,10 +46,10 @@ impl SystemAudioSource {
         capsfilter.set_property("caps", &caps);
 
         pipeline
-            .add_many(&[&src, &convert, &resample, &capsfilter])
+            .add_many(&[&src, &queue, &convert, &capsfilter])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to add elements"))?;
 
-        gst::Element::link_many(&[&src, &convert, &resample, &capsfilter])
+        gst::Element::link_many(&[&src, &queue, &convert, &capsfilter])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link elements"))?;
 
         Ok(AudioSourceOutput {

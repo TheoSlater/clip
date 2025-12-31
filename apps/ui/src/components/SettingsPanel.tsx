@@ -79,7 +79,7 @@ export const SettingsPanel = () => {
         });
     };
     return (
-        <div className="flex flex-col gap-6 p-4 bg-content1 rounded-large border-1 border-divider">
+        <div className="flex flex-col w-full gap-6 p-4 bg-content1 rounded-large border-1 border-divider">
             <SectionTitle title="Video Source" Icon={TvMinimalPlayIcon}>
                 <Select
                     selectedKeys={

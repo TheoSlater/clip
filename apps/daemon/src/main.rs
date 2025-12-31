@@ -1,3 +1,4 @@
+mod audio;
 mod capture_devices;
 mod capture_monitor;
 mod encoders;
@@ -10,7 +11,6 @@ mod runtime;
 mod settings;
 mod state;
 mod video;
-mod audio;
 
 use axum::Router;
 
@@ -32,9 +32,30 @@ use crate::{
     settings::{apply_startup_fallbacks, default_settings, load_settings, save_settings},
 };
 
+use std::env;
+
+fn get_parent_pid() -> Option<u32> {
+    let mut args = env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        if arg == "--parent-pid" {
+            return args.next().and_then(|v| v.parse::<u32>().ok());
+        }
+    }
+
+    None
+}
+
 #[tokio::main]
 async fn main() {
     init_logging();
+
+    if let Some(parent_pid) = get_parent_pid() {
+        start_parent_watchdog(parent_pid);
+    } else {
+        logger::warn("system", "no parent pid supplied, watchdog disabled")
+    }
+
     // --- shutdown signal ---
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -107,4 +128,40 @@ async fn main() {
         })
         .await
         .expect("server error");
+}
+
+fn start_parent_watchdog(parent_pid: u32) {
+    std::thread::spawn(move || {
+        logger::info(
+            "system",
+            format!("starting parent watchdog (pid {})", parent_pid),
+        );
+
+        loop {
+            // SAFETY: OpenProcess returns an invalid handle if the PID is gone
+            let alive = unsafe {
+                use windows::Win32::Foundation::CloseHandle;
+                use windows::Win32::System::Threading::{
+                    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                };
+
+                match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, parent_pid) {
+                    Ok(handle) => {
+                        if let Err(e) = CloseHandle(handle) {
+                            logger::debug("watchdog", format!("CloseHandle failed: {:?}", e))
+                        }
+                        true
+                    }
+                    Err(_) => false,
+                }
+            };
+
+            if !alive {
+                logger::warn("watchdog", "parent process exited, shutting down daemon");
+                std::process::exit(0);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
 }

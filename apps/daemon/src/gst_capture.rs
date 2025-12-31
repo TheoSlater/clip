@@ -11,6 +11,8 @@ use gst::prelude::*;
 use gstreamer as gst;
 use gstreamer_app as gst_app;
 
+use crossbeam_channel::Sender;
+
 use crate::audio::AudioGraph;
 use crate::video::VideoGraph;
 
@@ -34,12 +36,21 @@ pub enum CaptureState {
 }
 
 pub struct GstCapture {
+    // gstreamer
     pipeline: gst::Pipeline,
     appsink: gst_app::AppSink,
+
+    // state / lifecycle
     state: Arc<Mutex<CaptureState>>,
     stop_flag: Arc<AtomicBool>,
-    bus_thread: Option<std::thread::JoinHandle<()>>,
     callback_guard: Arc<AtomicBool>,
+
+    // threads
+    bus_thread: Option<std::thread::JoinHandle<()>>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
+
+    // packet pipeline
+    packet_tx: Sender<Packet>,
 }
 
 impl GstCapture {
@@ -96,38 +107,43 @@ impl GstCapture {
 
         video.attach_keyframe_tracker(ring_buffer.clone())?;
 
-        let started_at = Instant::now();
-        let ring_buffer_clone = ring_buffer.clone();
+        let (packet_tx, packet_rx) = crossbeam_channel::bounded::<Packet>(1024);
 
-        let callback_guard_clone = callback_guard.clone();
+        // Worker thread owns the ring buffer
+        let ring_buffer_clone = ring_buffer.clone();
+        let stop_flag_clone = stop_flag.clone();
+
+        let worker_thread = std::thread::spawn(move || {
+            while !stop_flag_clone.load(Ordering::SeqCst) {
+                match packet_rx.recv() {
+                    Ok(packet) => {
+                        if let Ok(mut rb) = ring_buffer_clone.lock() {
+                            rb.push(packet);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let tx = packet_tx.clone();
 
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
-                    if callback_guard_clone.load(Ordering::SeqCst) {
-                        return Ok(gst::FlowSuccess::Ok);
-                    }
+                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
+                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
 
-                    let sample = match sink.pull_sample() {
-                        Ok(sample) => sample,
-                        Err(_) => return Err(gst::FlowError::Error),
-                    };
+                    let pts_ms = buffer.dts_or_pts().map(|pts| pts.mseconds()).unwrap_or(0);
 
-                    let buffer = match sample.buffer() {
-                        Some(buffer) => buffer,
-                        None => return Ok(gst::FlowSuccess::Ok),
-                    };
+                    if let Ok(map) = buffer.map_readable() {
+                        let packet = Packet {
+                            pts_ms,
+                            data: map.as_slice().to_vec(),
+                        };
 
-                    let pts_ms = buffer
-                        .dts_or_pts()
-                        .map(|pts| pts.mseconds())
-                        .unwrap_or_else(|| started_at.elapsed().as_millis() as u64);
-
-                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    let data = map.as_slice().to_vec();
-
-                    if let Ok(mut rb) = ring_buffer_clone.lock() {
-                        rb.push(Packet { pts_ms, data });
+                        // Non blocking send, if full: drop.
+                        let _ = tx.try_send(packet);
                     }
 
                     Ok(gst::FlowSuccess::Ok)
@@ -159,10 +175,15 @@ impl GstCapture {
         Ok(Self {
             pipeline,
             appsink: appsink.clone(),
+
             state,
             stop_flag,
-            bus_thread: Some(bus_thread),
             callback_guard,
+
+            bus_thread: Some(bus_thread),
+            worker_thread: Some(worker_thread),
+
+            packet_tx,
         })
     }
 
@@ -190,22 +211,28 @@ impl GstCapture {
 
         logger::info("capture", "stopping pipeline");
 
-        // 1) Stop callbacks FIRST
+        // 1) Prevent further appsink callbacks
+        self.callback_guard.store(true, Ordering::SeqCst);
         self.appsink
             .set_callbacks(gst_app::AppSinkCallbacks::builder().build());
         self.appsink.set_property("emit-signals", &false);
-        self.callback_guard.store(true, Ordering::SeqCst);
 
-        // 2) Stop bus thread
+        // 2) Signal threads to stop
         self.stop_flag.store(true, Ordering::SeqCst);
 
-        // 3) Give encoders a chance to flush and close cleanly
-        let _ = self.pipeline.send_event(gst::event::Eos::new());
+        // 3) Drop sender unblocks worker thread
+        drop(self.packet_tx.clone());
 
-        // 4) Stop pipeline
+        // 4) Flush pipeline
+        let _ = self.pipeline.send_event(gst::event::Eos::new());
         let _ = self.pipeline.set_state(gst::State::Null);
 
-        // 5) Join bus thread
+        // 5) Join worker thread
+        if let Some(handle) = self.worker_thread.take() {
+            let _ = handle.join();
+        }
+
+        // 6) Join bus thread
         if let Some(handle) = self.bus_thread.take() {
             let _ = handle.join();
         }
