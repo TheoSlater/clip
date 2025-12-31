@@ -1,8 +1,9 @@
 use chrono::Utc;
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     io::{self, Write},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 use tokio::sync::broadcast;
 
@@ -28,6 +29,8 @@ struct LogBroadcaster {
 }
 
 static BROADCASTER: OnceLock<LogBroadcaster> = OnceLock::new();
+static LOG_BUFFER: OnceLock<Mutex<VecDeque<LogEvent>>> = OnceLock::new();
+const MAX_BUFFERED_LOGS: usize = 2000;
 
 pub fn init_logging() {
     let _ = BROADCASTER.get_or_init(|| {
@@ -51,6 +54,7 @@ pub fn emit(level: LogLevel, source: &str, message: impl Into<String>) {
         let (tx, _) = broadcast::channel(2048);
         LogBroadcaster { tx }
     });
+    let buffer = LOG_BUFFER.get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_BUFFERED_LOGS)));
 
     let message = message.into();
     let event = LogEvent {
@@ -59,6 +63,16 @@ pub fn emit(level: LogLevel, source: &str, message: impl Into<String>) {
         source: source.to_string(),
         message: message.clone(),
     };
+
+    if let Ok(mut guard) = buffer.lock() {
+        guard.push_back(event.clone());
+        if guard.len() > MAX_BUFFERED_LOGS {
+            let overflow = guard.len() - MAX_BUFFERED_LOGS;
+            for _ in 0..overflow {
+                guard.pop_front();
+            }
+        }
+    }
 
     let _ = broadcaster.tx.send(event);
 
@@ -86,4 +100,12 @@ pub fn error(source: &str, message: impl Into<String>) {
 
 pub fn debug(source: &str, message: impl Into<String>) {
     emit(LogLevel::Debug, source, message);
+}
+
+pub fn recent_logs() -> Vec<LogEvent> {
+    LOG_BUFFER
+        .get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_BUFFERED_LOGS)))
+        .lock()
+        .map(|guard| guard.iter().cloned().collect())
+        .unwrap_or_default()
 }

@@ -1,61 +1,79 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
-import { axiosClient } from "../axiosClient";
 import { useBackendConnectionStore } from "../state/backendConnection";
 
-const FALLBACK_BASE_URL = "http://localhost:43123";
+type CaptureStatusEvent = {
+    status: string;
+    message?: string | null;
+};
 
 export const useBackendConnection = () => {
     const { setStatus, setLastError } = useBackendConnectionStore();
     const status = useBackendConnectionStore((state) => state.status);
     const lastError = useBackendConnectionStore((state) => state.lastError);
-    const sourceRef = useRef<EventSource | null>(null);
+    const unlistenRef = useRef<null | (() => void)>(null);
 
     useEffect(() => {
-        if (sourceRef.current) {
-            return;
-        }
+        let active = true;
 
         setStatus("connecting");
 
-        const baseUrl = axiosClient.defaults.baseURL ?? FALLBACK_BASE_URL;
-        const source = new EventSource(`${baseUrl}/events/connection`);
-        sourceRef.current = source;
+        invoke("get_status")
+            .then(() => {
+                if (!active) {
+                    return;
+                }
+                setStatus("connected");
+                setLastError(null);
+            })
+            .catch((error) => {
+                if (!active) {
+                    return;
+                }
+                setStatus("disconnected");
+                setLastError(
+                    error instanceof Error ? error.message : "Connection failed",
+                );
+            });
 
-        source.onopen = () => {
+        listen<CaptureStatusEvent>("capture-status", (event) => {
+            if (!active) {
+                return;
+            }
+
+            if (event.payload.status === "error") {
+                setLastError(event.payload.message ?? "Capture error");
+            } else {
+                setLastError(null);
+            }
             setStatus("connected");
-            setLastError(null);
-        };
-
-        source.onerror = () => {
-            setStatus("disconnected");
-            setLastError("Connection lost");
-            source.close();
-            sourceRef.current = null;
-        };
+        })
+            .then((unlisten) => {
+                if (!active) {
+                    unlisten();
+                    return;
+                }
+                unlistenRef.current = unlisten;
+            })
+            .catch((error) => {
+                if (!active) {
+                    return;
+                }
+                setStatus("disconnected");
+                setLastError(
+                    error instanceof Error ? error.message : "Event stream failed",
+                );
+            });
 
         return () => {
-            source.close();
-            sourceRef.current = null;
+            active = false;
+            if (unlistenRef.current) {
+                unlistenRef.current();
+                unlistenRef.current = null;
+            }
         };
     }, [setLastError, setStatus]);
-
-    useEffect(() => {
-        if (status !== "disconnected") {
-            return;
-        }
-
-        const pingInterval = setInterval(async () => {
-            try {
-                setStatus("connecting");
-                await axiosClient.get("/status");
-                setStatus("connected");
-            } catch (err) {
-                setLastError("Connection lost");
-            }
-        }, 2000);
-
-        return () => clearInterval(pingInterval);
-    }, [setLastError, setStatus, status]);
 
     return {
         status,

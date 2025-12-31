@@ -46,7 +46,7 @@ export const LogPanel = () => {
         <div className="flex flex-col rounded-large border-1 border-divider overflow-hidden">
             <div className="flex items-center gap-4 bg-content1 p-4">
                 <LogsIcon size={21} className="text-default-500" />
-                <h6 className="text-medium grow">Daemon Log</h6>
+                <h6 className="text-medium grow">Capture Log</h6>
                 <span className="text-xs text-default-500">
                     {logs.length} lines
                 </span>

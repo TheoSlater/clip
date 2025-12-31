@@ -1,4 +1,5 @@
 import { Button, Divider } from "@heroui/react";
+import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { useBackendConnectionStore } from "../state/backendConnection";
@@ -8,28 +9,23 @@ export const ControlPanel = () => {
     const [textRes, setTextRes] = useState("{}");
 
     async function handlePressStatus() {
-        const response = await fetch("http://localhost:43123/status");
-        setTextRes(await response.text());
+        const response = await invoke("get_status");
+        setTextRes(JSON.stringify(response, null, 2));
     }
 
     async function handlePressClip() {
-        const response = await fetch("http://localhost:43123/clip", {
-            method: "POST",
-        });
-        setTextRes(await response.text());
+        const response = await invoke("clip");
+        setTextRes(JSON.stringify(response, null, 2));
     }
 
     async function handlePressListClips() {
-        openPath(
-            "C:\\Users\\ohmsl\\Documents\\Code\\clip\\apps\\daemon\\clips",
-        );
+        const clipsDir = await invoke<string>("get_clips_dir");
+        openPath(clipsDir);
     }
 
     async function handlePressShutdown() {
-        const response = await fetch("http://localhost:43123/shutdown", {
-            method: "POST",
-        });
-        setTextRes(await response.text());
+        await invoke("stop_capture");
+        setTextRes(JSON.stringify({ stopped: true }, null, 2));
     }
     return (
         <div className="flex flex-col gap-3 bg-content1 rounded-large p-4 border-1 border-divider">
@@ -62,7 +58,7 @@ export const ControlPanel = () => {
                 onPress={handlePressShutdown}
                 isDisabled={connectionStatus !== "connected"}
             >
-                Shutdown Daemon
+                Stop Capture
             </Button>
         </div>
     );

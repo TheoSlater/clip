@@ -4,7 +4,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
 };
 
 use gst::prelude::*;

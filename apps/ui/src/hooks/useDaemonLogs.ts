@@ -1,77 +1,94 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
-import { axiosClient } from "../axiosClient";
 import { LogEvent } from "../types/LogEvent";
 
 const MAX_LOGS = 1000;
 
 export const useDaemonLogs = () => {
-    const queryClient = useQueryClient();
-    const sourceRef = useRef<EventSource | null>(null);
-    const disconnectedRef = useRef(false);
+    const unlistenRef = useRef<null | (() => void)>(null);
     const [logs, setLogs] = useState<Array<LogEvent>>([]);
 
     useEffect(() => {
-        if (sourceRef.current) {
-            return;
-        }
+        let active = true;
 
-        const baseUrl = axiosClient.defaults.baseURL;
-        const source = new EventSource(`${baseUrl}/events/logs`);
-        sourceRef.current = source;
-
-        const onLog = (event: MessageEvent<string>) => {
-            try {
-                const parsed = JSON.parse(event.data) as LogEvent;
+        invoke<Array<LogEvent>>("get_recent_logs")
+            .then((events) => {
+                if (!active || events.length === 0) {
+                    return;
+                }
                 setLogs((prev) => {
-                    const next = [...prev, parsed];
-                    if (next.length > MAX_LOGS) {
-                        next.splice(0, next.length - MAX_LOGS);
+                    const merged = [...events, ...prev];
+                    if (merged.length > MAX_LOGS) {
+                        merged.splice(0, merged.length - MAX_LOGS);
                     }
-                    return next;
+                    return merged;
                 });
-            } catch (err) {
-                console.error(err);
-            }
-        };
-
-        const onError = () => {
-            if (!disconnectedRef.current) {
-                disconnectedRef.current = true;
+            })
+            .catch((error) => {
+                if (!active) {
+                    return;
+                }
                 setLogs((prev) => [
                     ...prev,
                     {
                         timestamp: new Date().toISOString(),
                         level: "warning",
                         source: "system",
-                        message: "Log stream disconnected",
+                        message:
+                            error instanceof Error
+                                ? error.message
+                                : "Failed to load recent logs",
                     },
                 ]);
+            });
+
+        listen<LogEvent>("capture-log", (event) => {
+            if (!active) {
+                return;
             }
-            source.close();
-            sourceRef.current = null;
-        };
-
-        const onOpen = () => {
-            disconnectedRef.current = false;
-        };
-
-        source.addEventListener("log", onLog);
-        source.addEventListener("message", onLog);
-        source.addEventListener("open", onOpen);
-        source.addEventListener("error", onError);
-        source.onmessage = onLog;
+            console.log("[capture]", event.payload);
+            setLogs((prev) => {
+                const next = [...prev, event.payload];
+                if (next.length > MAX_LOGS) {
+                    next.splice(0, next.length - MAX_LOGS);
+                }
+                return next;
+            });
+        })
+            .then((unlisten) => {
+                if (!active) {
+                    unlisten();
+                    return;
+                }
+                unlistenRef.current = unlisten;
+            })
+            .catch((error) => {
+                if (!active) {
+                    return;
+                }
+                setLogs((prev) => [
+                    ...prev,
+                    {
+                        timestamp: new Date().toISOString(),
+                        level: "warning",
+                        source: "system",
+                        message:
+                            error instanceof Error
+                                ? error.message
+                                : "Log stream unavailable",
+                    },
+                ]);
+            });
 
         return () => {
-            source.removeEventListener("log", onLog);
-            source.removeEventListener("message", onLog);
-            source.removeEventListener("open", onOpen);
-            source.removeEventListener("error", onError);
-            source.onmessage = null;
-            source.close();
-            sourceRef.current = null;
+            active = false;
+            if (unlistenRef.current) {
+                unlistenRef.current();
+                unlistenRef.current = null;
+            }
         };
-    }, [queryClient]);
+    }, []);
 
     return logs;
 };

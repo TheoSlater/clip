@@ -1,18 +1,17 @@
 import { addToast } from "@heroui/react";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { useBackendConnectionStore } from "../state/backendConnection";
 import { VideoDevice } from "../types/devices/VideoDevice";
-import { useApiClient } from "./useApiClient";
 
 export const useVideoDevices = () => {
-    const { get } = useApiClient();
     const status = useBackendConnectionStore((state) => state.status);
 
     return {
         query: useQuery({
             queryKey: ["video", "devices"],
             queryFn: () => {
-                return get<Array<VideoDevice>>("/devices/video");
+                return invoke<Array<VideoDevice>>("list_video_devices");
             },
             enabled: status === "connected",
             throwOnError: (error) => {

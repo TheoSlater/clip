@@ -31,6 +31,6 @@
             "icons/icon.icns",
             "icons/icon.ico"
         ],
-        "externalBin": ["../../daemon/target/debug/clip-service"]
+        "externalBin": []
     }
 }

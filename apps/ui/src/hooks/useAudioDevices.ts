@@ -1,18 +1,17 @@
 import { addToast } from "@heroui/react";
 import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { AudioDevice } from "../types/devices/AudioDevice";
 import { useBackendConnectionStore } from "../state/backendConnection";
-import { useApiClient } from "./useApiClient";
 
 export const useAudioDevices = () => {
-    const { get } = useApiClient();
     const status = useBackendConnectionStore((state) => state.status);
 
     return {
         query: useQuery({
             queryKey: ["audio", "devices"],
             queryFn: () => {
-                return get<Array<AudioDevice>>("/devices/audio");
+                return invoke<Array<AudioDevice>>("list_microphone_devices");
             },
             enabled: status === "connected",
             throwOnError: (error) => {
