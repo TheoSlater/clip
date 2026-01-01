@@ -14,7 +14,7 @@
             {
                 "title": "ui",
                 "width": 1000,
-                "height": 800
+                "height": 975
             }
         ],
         "security": {
@@ -23,14 +23,13 @@
     },
     "bundle": {
         "active": true,
-        "targets": "all",
+        "targets": "nsis",
         "icon": [
             "icons/32x32.png",
             "icons/128x128.png",
             "icons/128x128@2x.png",
             "icons/icon.icns",
             "icons/icon.ico"
-        ],
-        "externalBin": []
+        ]
     }
 }

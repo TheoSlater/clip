@@ -49,7 +49,7 @@ pub struct GstCapture {
     worker_thread: Option<std::thread::JoinHandle<()>>,
 
     // packet pipeline
-    packet_tx: Sender<Packet>,
+    packet_tx: Option<Sender<Packet>>,
 
     // audio controls
     system_volume: Option<gst::Element>,
@@ -191,7 +191,7 @@ impl GstCapture {
             bus_thread: Some(bus_thread),
             worker_thread: Some(worker_thread),
 
-            packet_tx,
+            packet_tx: Some(packet_tx),
 
             system_volume,
             mic_volume,
@@ -248,7 +248,9 @@ impl GstCapture {
         self.stop_flag.store(true, Ordering::SeqCst);
 
         // 3) Drop sender unblocks worker thread
-        drop(self.packet_tx.clone());
+        if let Some(sender) = self.packet_tx.take() {
+            drop(sender);
+        }
 
         // 4) Flush pipeline
         let _ = self.pipeline.send_event(gst::event::Eos::new());

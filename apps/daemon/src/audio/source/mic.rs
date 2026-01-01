@@ -23,15 +23,15 @@ impl MicAudioSource {
         })
     }
 
-    pub fn build(&self, pipeline: &gst::Pipeline, volume_value: f32) -> io::Result<AudioSourceOutput> {
+    pub fn build(
+        &self,
+        pipeline: &gst::Pipeline,
+        volume_value: f32,
+    ) -> io::Result<AudioSourceOutput> {
         let src = gst::ElementFactory::make("wasapisrc")
             .build()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing wasapisrc"))?;
 
-        // Mic, not loopback
-        src.set_property("loopback", &false);
-        src.set_property("provide-clock", &false);
-        src.set_property("low-latency", &false);
         src.set_property("do-timestamp", &true);
         src.set_property_from_str("device", &self.device_id);
 
@@ -52,24 +52,14 @@ impl MicAudioSource {
         let volume_value = volume_value as f64;
         volume.set_property("volume", &volume_value);
 
-        let capsfilter = gst::ElementFactory::make("capsfilter")
-            .build()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "missing capsfilter"))?;
-
-        let caps = gst::Caps::builder("audio/x-raw")
-            .field("rate", 48_000i32)
-            .field("channels", 2i32)
-            .build();
-        capsfilter.set_property("caps", &caps);
-
         pipeline
-            .add_many(&[&src, &convert, &volume, &queue, &capsfilter])
+            .add_many(&[&src, &convert, &volume, &queue])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to add elements"))?;
-        gst::Element::link_many(&[&src, &convert, &volume, &queue, &capsfilter])
+        gst::Element::link_many(&[&src, &convert, &volume, &queue])
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to link elements"))?;
 
         Ok(AudioSourceOutput {
-            element: capsfilter,
+            element: queue,
             volume: Some(volume),
         })
     }

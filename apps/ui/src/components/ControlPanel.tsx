@@ -1,21 +1,17 @@
 import { Button, Divider } from "@heroui/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
 import { useBackendConnectionStore } from "../state/backendConnection";
 
 export const ControlPanel = () => {
     const connectionStatus = useBackendConnectionStore((state) => state.status);
-    const [textRes, setTextRes] = useState("{}");
 
-    async function handlePressStatus() {
-        const response = await invoke("get_status");
-        setTextRes(JSON.stringify(response, null, 2));
+    function handlePressStatus() {
+        invoke("get_status");
     }
 
-    async function handlePressClip() {
-        const response = await invoke("clip");
-        setTextRes(JSON.stringify(response, null, 2));
+    function handlePressClip() {
+        invoke("clip");
     }
 
     async function handlePressListClips() {
@@ -23,10 +19,10 @@ export const ControlPanel = () => {
         openPath(clipsDir);
     }
 
-    async function handlePressShutdown() {
-        await invoke("stop_capture");
-        setTextRes(JSON.stringify({ stopped: true }, null, 2));
+    function handlePressShutdown() {
+        invoke("stop_capture");
     }
+
     return (
         <div className="flex flex-col gap-3 bg-content1 rounded-large p-4 border-1 border-divider">
             <Button

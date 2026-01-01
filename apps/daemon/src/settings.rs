@@ -24,6 +24,8 @@ pub struct UserSettings {
     pub video_encoder_id: String,
     pub framerate: u32,
     pub bitrate_kbps: u32,
+    #[serde(default = "default_clips_dir")]
+    pub clips_dir: String,
 }
 
 pub fn settings_path() -> io::Result<PathBuf> {
@@ -73,6 +75,7 @@ pub fn default_settings(
         video_encoder_id: default_encoder.id.clone(),
         framerate: 60,
         bitrate_kbps: 20_000,
+        clips_dir: default_clips_dir(),
     })
 }
 
@@ -131,6 +134,11 @@ pub fn apply_startup_fallbacks(
         changes.push("mic volume reset to 1.0".to_string());
     }
 
+    if settings.clips_dir.trim().is_empty() {
+        settings.clips_dir = default_clips_dir();
+        changes.push("clips directory reset to default".to_string());
+    }
+
     (settings, changes)
 }
 
@@ -177,6 +185,10 @@ pub fn validate_settings(
         return Err("mic volume must be between 0.0 and 2.0".to_string());
     }
 
+    if settings.clips_dir.trim().is_empty() {
+        return Err("clips directory must not be empty".to_string());
+    }
+
     Ok(())
 }
 
@@ -213,4 +225,8 @@ fn default_system_audio_volume() -> f32 {
 
 fn default_mic_volume() -> f32 {
     1.0
+}
+
+fn default_clips_dir() -> String {
+    "clips".to_string()
 }

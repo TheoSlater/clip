@@ -7,4 +7,5 @@ export type UserSettings = {
     video_encoder_id: string;
     framerate: number;
     bitrate_kbps: number;
+    clips_dir: string;
 };

@@ -4,6 +4,7 @@ pub mod encoders;
 pub mod gst_capture;
 pub mod gst_utils;
 pub mod logger;
+pub mod remux;
 pub mod ring_buffer;
 pub mod settings;
 pub mod video;

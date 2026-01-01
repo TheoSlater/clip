@@ -8,7 +8,13 @@ import {
     Switch,
 } from "@heroui/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { BinaryIcon, TvMinimalPlayIcon, Volume2Icon } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+    BinaryIcon,
+    DatabaseIcon,
+    TvMinimalPlayIcon,
+    Volume2Icon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useMicrophoneDevices } from "../hooks/useMicrophoneDevices";
 import { useSettings } from "../hooks/useSettings";
@@ -293,6 +299,37 @@ export const SettingsPanel = () => {
                     isDisabled={!form || connectionStatus !== "connected"}
                     showSteps
                 />
+            </SectionTitle>
+
+            <SectionTitle title="Storage" Icon={DatabaseIcon}>
+                <div className="flex gap-3 items-end">
+                    <Input
+                        label="Clips directory"
+                        value={form?.clips_dir ?? ""}
+                        readOnly
+                        isDisabled={!form || connectionStatus !== "connected"}
+                        className="flex-1"
+                    />
+                    <Button
+                        variant="flat"
+                        onPress={async () => {
+                            if (!form) {
+                                return;
+                            }
+                            const selected = await open({
+                                directory: true,
+                                multiple: false,
+                                title: "Select clips directory",
+                            });
+                            if (typeof selected === "string") {
+                                updateForm("clips_dir", selected);
+                            }
+                        }}
+                        isDisabled={!form || connectionStatus !== "connected"}
+                    >
+                        Choose folder
+                    </Button>
+                </div>
             </SectionTitle>
 
             <Button

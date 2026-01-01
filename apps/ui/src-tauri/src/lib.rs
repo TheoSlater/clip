@@ -1,6 +1,5 @@
 use std::{
-    fs::{self, File},
-    io::Write,
+    fs::{self},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -15,7 +14,7 @@ use clip_service::{
     encoders::{list_video_encoders as list_video_encoders_inner, VideoEncoderDescriptor},
     gst_capture::GstCapture,
     logger,
-    ring_buffer::{Packet, RingBuffer},
+    ring_buffer::RingBuffer,
     settings::{
         apply_startup_fallbacks, default_settings, load_settings, save_settings, validate_settings,
         UserSettings,
@@ -378,53 +377,51 @@ fn set_audio_volume(
 }
 
 #[tauri::command]
-fn clip(state: State<'_, Mutex<CaptureRuntime>>) -> Result<ClipResponse, String> {
-    let ring_buffer = {
+async fn clip(state: State<'_, Mutex<CaptureRuntime>>) -> Result<ClipResponse, String> {
+    let (packets, clips_dir) = {
         let guard = state.lock().unwrap();
-        guard.ring_buffer.clone()
+        let mut rb = guard.ring_buffer.lock().unwrap();
+        let packets = rb.drain_from_keyframe();
+        (packets, guard.settings.clips_dir.clone())
     };
-
-    let packets: Vec<Packet> = ring_buffer.lock().unwrap().drain_from_keyframe();
 
     if packets.is_empty() {
         return Err("no packets available".to_string());
     }
 
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
-    let filename = format!("clip-{}.ts", timestamp);
+    let filename = format!("clip-{}.mp4", timestamp);
 
-    let mut path = PathBuf::from("clips");
-    fs::create_dir_all(&path).map_err(|err| err.to_string())?;
+    let mut path = PathBuf::from(clips_dir);
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     path.push(&filename);
 
-    let mut file = File::create(&path).map_err(|err| err.to_string())?;
+    let packets_clone = packets.clone();
+    let path_clone = path.clone();
 
-    let mut bytes_written = 0usize;
-    for packet in &packets {
-        file.write_all(&packet.data)
-            .map_err(|err| err.to_string())?;
-        bytes_written += packet.data.len();
-    }
-
-    let duration_ms = match (packets.first(), packets.last()) {
-        (Some(first), Some(last)) => last.pts_ms.saturating_sub(first.pts_ms),
-        _ => 0,
-    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        clip_service::remux::remux_ts_to_mp4(&packets_clone, &path_clone)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     logger::info("capture", format!("Clip saved to {}", path.display()));
 
     Ok(ClipResponse {
         filename,
         packets: packets.len(),
-        duration_ms,
-        bytes: bytes_written,
+        duration_ms: result.duration_ms,
+        bytes: result.bytes_written as usize,
     })
 }
 
 #[tauri::command]
-fn list_clips() -> Vec<ClipInfo> {
+fn list_clips(state: State<'_, Mutex<CaptureRuntime>>) -> Vec<ClipInfo> {
     let mut clips = Vec::new();
-    let clips_dir = PathBuf::from("clips");
+    let clips_dir = {
+        let guard = state.lock().unwrap();
+        PathBuf::from(guard.settings.clips_dir.clone())
+    };
 
     if let Ok(entries) = fs::read_dir(&clips_dir) {
         for entry in entries.flatten() {
@@ -445,9 +442,11 @@ fn list_clips() -> Vec<ClipInfo> {
 }
 
 #[tauri::command]
-fn get_clips_dir() -> Result<String, String> {
-    let mut path = std::env::current_dir().map_err(|err| err.to_string())?;
-    path.push("clips");
+fn get_clips_dir(state: State<'_, Mutex<CaptureRuntime>>) -> Result<String, String> {
+    let path = {
+        let guard = state.lock().unwrap();
+        PathBuf::from(guard.settings.clips_dir.clone())
+    };
     fs::create_dir_all(&path).map_err(|err| err.to_string())?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -492,6 +491,7 @@ pub fn run() {
 
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_status,

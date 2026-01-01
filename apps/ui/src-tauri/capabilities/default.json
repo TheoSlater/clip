@@ -6,6 +6,7 @@
     "platforms": ["windows"],
     "permissions": [
         "core:default",
+        "dialog:allow-open",
         "opener:default",
         {
             "identifier": "opener:allow-open-path",

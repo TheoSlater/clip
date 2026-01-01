@@ -16,3 +16,13 @@ impl GstLinkExt for gst::Element {
         })
     }
 }
+
+pub fn make(name: &str) -> Result<gst::Element, String> {
+    gst::ElementFactory::make(name)
+        .build()
+        .map_err(|_| format!("missing gstreamer element: {}", name))
+}
+
+pub fn err<T: ToString>(e: T) -> String {
+    e.to_string()
+}
